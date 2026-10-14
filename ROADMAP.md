@@ -63,13 +63,13 @@ on); its method names below come from inspecting the installed version.
 - [ ] **Colors and calendar settings** (color, default alert). S, med
 - [ ] **Subscribed calendars** (holidays, sports) read-only listing. S, low
 - [ ] **ICS import / export** of events. M, low
-- [ ] **Free/busy**: when are you busy, ignoring titles. S, low
+- [x] **Free/busy**: when are you busy, ignoring titles (via `find_free_time`). S, low
 
 ## 3. Scheduling helpers (built on what we already read)
 
-- [ ] **Free-time finder**: "find 45 minutes this week" across all calendars,
+- [x] **Free-time finder**: "find 45 minutes this week" across all calendars,
       with working hours and buffers. M, low  <- best next step
-- [ ] **Conflict and overload check** before creating an event. S-M, low
+- [x] **Conflict check** before creating an event. S-M, low
 - [ ] **Find a slot and book it** in one call. M, low
 - [ ] **Smart reschedule**: "push everything on Thursday to Friday". M, low
 - [ ] **Day/week summary stats**: hours booked, busiest day, empty days. S, low

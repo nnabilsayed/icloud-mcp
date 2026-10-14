@@ -196,3 +196,12 @@ def test_agenda_rejects_bad_days(cal):
     for days in (0, 400):
         with pytest.raises(ValueError):
             S.agenda(days=days)
+
+
+def test_search_range_boundaries_are_half_open(cal):
+    """An event ending exactly when the window opens, or starting exactly when it closes, is outside it."""
+    make(cal, "ends at open", start="2026-10-14T09:00:00", end="2026-10-14T10:00:00")
+    make(cal, "starts at close", start="2026-10-14T12:00:00", end="2026-10-14T13:00:00")
+    make(cal, "inside", start="2026-10-14T10:00:00", end="2026-10-14T12:00:00")
+    got = [S._summarize(e)["summary"] for e in S._search_range(cal, datetime(2026, 10, 14, 10), datetime(2026, 10, 14, 12))]
+    assert got == ["inside"]

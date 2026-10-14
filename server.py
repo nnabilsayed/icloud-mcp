@@ -7,6 +7,7 @@ import os
 import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
+from datetime import time as time_of_day
 
 import caldav
 import niquests
@@ -237,6 +238,7 @@ def create_event(
     repeat_until: str = "",
     repeat_days: list[str] | None = None,
     alerts: list[int] | None = None,
+    warn_conflicts: bool = True,
 ) -> dict:
     """Create an event. start/end are ISO datetimes; end defaults to start + 1 hour.
     All-day: pass start as 'YYYY-MM-DD'. end is then the last day (inclusive, also
@@ -246,7 +248,9 @@ def create_event(
     occurrences) or repeat_until ('YYYY-MM-DD', inclusive), not both. For weekly,
     repeat_days like ['MO','WE'] picks weekdays (default: the start's weekday).
     alerts: notify N minutes before the start, e.g. [30, 1440] = 30 minutes and 1 day
-    before. For all-day events the start is midnight, so 900 = 9:00 the day before."""
+    before. For all-day events the start is midnight, so 900 = 9:00 the day before.
+    warn_conflicts: a timed event is still created, but the result lists any events it
+    overlaps under 'conflicts' (None if the check could not run)."""
     s = _parse_when(start)
     if _is_all_day(s):
         last = _parse_when(end) if end else s
@@ -279,6 +283,14 @@ def create_event(
         ev.add("description", description)
     cal.add_component(ev)
     target = _calendar(calendar)
+    conflicts = None
+    if warn_conflicts and not _is_all_day(s):
+        try:
+            ls, le = _local_naive(s), _local_naive(e)
+            conflicts = [info for bs, be, info in _busy_intervals(_event_calendar_list(), ls, le, False)
+                         if bs < le and be > ls]
+        except Exception:
+            conflicts = None  # the warning must never stop the event being created
     try:
         created = target.save_event(cal.to_ical().decode())
     except _NETWORK_ERRORS:
@@ -286,11 +298,11 @@ def create_event(
         # already there, return it; otherwise re-raise so _retry sends the create again.
         _reset_client()
         try:
-            return _summarize(_find(_calendar(calendar), uid))
+            return {**_summarize(_find(_calendar(calendar), uid)), "conflicts": conflicts}
         except ValueError:
             pass
         raise
-    return _summarize(created)
+    return {**_summarize(created), "conflicts": conflicts}
 
 
 @mcp.tool()
@@ -385,6 +397,146 @@ def _event_calendar_list() -> list:
                 found.append(cal)
         _event_calendars = found
     return _event_calendars
+
+
+# --- Free time and conflicts ------------------------------------------------------
+_DAY_CODES = ("MO", "TU", "WE", "TH", "FR", "SA", "SU")
+
+
+def _parse_clock(value: str, label: str) -> time_of_day:
+    try:
+        h, m = value.strip().split(":")
+        return time_of_day(int(h), int(m))
+    except Exception:
+        raise ValueError(f"{label} must look like 'HH:MM', got '{value}'")
+
+
+def _busy_intervals(cals, a: datetime, b: datetime, all_day_blocks: bool) -> list[tuple]:
+    """(start, end, info) for events overlapping the local window [a, b), as naive local times."""
+    out = []
+    for cal in cals:
+        for e in _search_range(cal, a, b):
+            comp = e.icalendar_component
+            st = comp["dtstart"].dt
+            if _is_all_day(st) and not all_day_blocks:
+                continue
+            start = _local_naive(st)
+            end = _local_naive(comp["dtend"].dt) if comp.get("dtend") else start
+            if end <= start:
+                continue  # zero-length: nothing to be busy with
+            out.append((start, end, {"calendar": cal.name, "summary": str(comp.get("summary", "")),
+                                     "uid": str(comp.get("uid")), "all_day": _is_all_day(st)}))
+    return sorted(out, key=lambda x: (x[0], x[1]))
+
+
+def _free_slots(busy, days, work_start, work_end, duration: int, buffer: int, now: datetime | None = None) -> list[dict]:
+    """Gaps of at least `duration` minutes inside working hours, around busy intervals.
+    `buffer` widens each busy interval on both sides. Gaps are whole stretches, not chopped pieces."""
+    pad, need = timedelta(minutes=buffer), timedelta(minutes=duration)
+    slots = []
+    for day in days:
+        lo = datetime.combine(day, work_start)
+        hi = datetime.combine(day, work_end)
+        if now is not None:
+            if now >= hi:
+                continue
+            if now > lo:  # today: nothing in the past; start on the next quarter hour
+                lo = now.replace(second=0, microsecond=0)
+                lo += timedelta(minutes=(-lo.minute) % 15)
+                if lo >= hi:
+                    continue
+        cursor = lo
+        for bs, be, _info in busy:
+            bs, be = bs - pad, be + pad
+            if be <= cursor or bs >= hi:
+                continue
+            if bs - cursor >= need:
+                slots.append((cursor, bs))
+            cursor = max(cursor, be)
+            if cursor >= hi:
+                break
+        if hi - cursor >= need and cursor < hi:
+            slots.append((cursor, hi))
+    return [{"start": s.isoformat(timespec="minutes"), "end": e.isoformat(timespec="minutes"),
+             "minutes": int((e - s).total_seconds() // 60)} for s, e in slots]
+
+
+@mcp.tool()
+@_retry
+def find_free_time(
+    duration_minutes: int = 60,
+    start: str = "",
+    days: int = 7,
+    work_start: str = "09:00",
+    work_end: str = "18:00",
+    weekdays: list[str] | None = None,
+    buffer_minutes: int = 0,
+    all_day_blocks: bool = False,
+    calendars: list[str] | None = None,
+    limit: int = 10,
+) -> dict:
+    """Find open time across your calendars. Returns the free stretches (each at least
+    duration_minutes long) within working hours, earliest first.
+    start: 'YYYY-MM-DD' (default today); days: how many days from start (max 60).
+    work_start / work_end: 'HH:MM' window per day. weekdays: e.g. ['MO','TU','WE','TH','FR']
+    (default: every day). buffer_minutes: breathing room kept before and after each event.
+    all_day_blocks: treat all-day events (like 'out of office') as busy; by default they
+    don't block. calendars: limit to these names (default all). Today starts from now."""
+    if duration_minutes < 1 or duration_minutes > 24 * 60:
+        raise ValueError("duration_minutes must be between 1 and 1440")
+    if days < 1 or days > 60:
+        raise ValueError("days must be between 1 and 60")
+    if buffer_minutes < 0 or limit < 1:
+        raise ValueError("buffer_minutes can't be negative and limit must be at least 1")
+    ws, we = _parse_clock(work_start, "work_start"), _parse_clock(work_end, "work_end")
+    if we <= ws:
+        raise ValueError("work_end must be after work_start")
+    codes = [d.strip().upper()[:2] for d in (weekdays or _DAY_CODES)]
+    if any(c not in _DAY_CODES for c in codes):
+        raise ValueError(f"weekdays must be from {list(_DAY_CODES)}")
+    first = date.fromisoformat(start.strip()) if start.strip() else datetime.now().date()
+    day_list = [first + timedelta(days=i) for i in range(days)]
+    day_list = [d for d in day_list if _DAY_CODES[d.weekday()] in codes]
+    chosen = _event_calendar_list()
+    if calendars:
+        wanted = {c.strip() for c in calendars}
+        chosen = [c for c in chosen if c.name in wanted]
+        if not chosen:
+            raise ValueError(f"None of {sorted(wanted)} are event calendars")
+    window = (datetime.combine(first, time_of_day.min), datetime.combine(first + timedelta(days=days), time_of_day.min))
+    busy = _busy_intervals(chosen, window[0], window[1], all_day_blocks)
+    slots = _free_slots(busy, day_list, ws, we, duration_minutes, buffer_minutes, datetime.now())
+    return {
+        "duration_minutes": duration_minutes,
+        "from": first.isoformat(),
+        "to": (first + timedelta(days=days - 1)).isoformat(),
+        "slots": slots[:limit],
+        "total_slots": len(slots),
+    }
+
+
+@mcp.tool()
+@_retry
+def check_conflicts(start: str, end: str = "", calendars: list[str] | None = None) -> dict:
+    """What overlaps a proposed time? start/end are ISO datetimes (end defaults to start + 1 hour),
+    or start as 'YYYY-MM-DD' for a whole day. Looks across all calendars (or the named ones).
+    Returns the overlapping events, each with its calendar; all-day ones are flagged all_day=true."""
+    s = _parse_when(start)
+    if _is_all_day(s):
+        a, b = datetime.combine(s, time_of_day.min), datetime.combine(s + timedelta(days=1), time_of_day.min)
+    else:
+        a = s
+        b = _parse_when(end) if end else s + timedelta(hours=1)
+        if _is_all_day(b):
+            raise ValueError("end must be an ISO datetime when start is one")
+        if b <= a:
+            raise ValueError("end must be after start")
+    chosen = _event_calendar_list()
+    if calendars:
+        chosen = [c for c in chosen if c.name in {x.strip() for x in calendars}]
+    hits = [info for bs, be, info in _busy_intervals(chosen, a, b, True) if bs < b and be > a]
+    return {"start": a.isoformat(timespec="minutes"), "end": b.isoformat(timespec="minutes"),
+            "free": not hits, "conflicts": hits}
 
 
 @mcp.tool()

@@ -25,6 +25,12 @@ Calendar: `list_calendars`, `list_events`, `create_event`, `update_event`,
 Both: `agenda(start, days, include_overdue)` returns events from every calendar,
 reminders due in the range, and overdue reminders in one call (default: today).
 
+`find_free_time(duration_minutes, start, days, work_start, work_end, weekdays,
+buffer_minutes, all_day_blocks, calendars, limit)` returns the open stretches (at least
+`duration_minutes` long) inside working hours across all calendars. `check_conflicts(start,
+end)` lists what overlaps a proposed time. `create_event` also reports `conflicts` for a timed
+event (it still creates it; `warn_conflicts=False` skips the check).
+
 Calendar calls retry up to 3 times on dropped connections or DNS blips; a create
 never duplicates an event that was saved before the connection dropped.
 `create_event` / `update_event` take `YYYY-MM-DD` for `start`/`end` to make an
