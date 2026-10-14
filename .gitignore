@@ -9,3 +9,6 @@ _*.json
 
 # local activity log (event and reminder titles): never commit
 .activity/
+
+# per-account notes author identity (replica + blobs): never commit
+.notes_identity

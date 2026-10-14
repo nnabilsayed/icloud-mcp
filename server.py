@@ -488,6 +488,10 @@ import reminders  # noqa: E402  (CloudKit-backed Reminders tools)
 
 reminders.register(mcp)
 
+import notes  # noqa: E402  (CloudKit-backed Notes tools: create, move, delete)
+
+notes.register(mcp)
+
 
 def _event_text(comp) -> str:
     return " ".join([str(comp.get(k, "")) for k in ("summary", "description", "location")] + _categories_of(comp)).lower()
@@ -931,7 +935,12 @@ def undo(entry_id: str = "", batch: str = "") -> dict:
     for row in targets:
         try:
             op = row["undo"]
-            note = reminders.undo_op(op) if op["op"] in reminders.UNDO_OPS else _undo_calendar_op(op)
+            if op["op"] in reminders.UNDO_OPS:
+                note = reminders.undo_op(op)
+            elif op["op"] in notes.UNDO_OPS:
+                note = notes.undo_op(op)
+            else:
+                note = _undo_calendar_op(op)
         except Exception as exc:
             return {"undone": done, "failed": {"id": row["id"], "summary": row["summary"],
                                                 "error": f"{type(exc).__name__}: {exc}"[:300]}}

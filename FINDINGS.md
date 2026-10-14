@@ -222,3 +222,38 @@ project and (all 30 checked) by the Calendar app. A scan of the calendar is the 
   `#RRGGBBAA`), the component set and the current user's privileges. For this account no calendar
   carried a subscription marker (`subscribed` resource type or `source`): holiday, birthday and sports
   subscriptions are not exposed over CalDAV. There is no property for a calendar's default alert.
+
+## Apple Notes: a note that survives needs its CRDT structure
+
+Notes the app writes carry more than text. Creating one through the CloudKit API with only the
+text and formatting runs is accepted (`200`, the record exists, the library reads it back), and
+then it is moved to Recently Deleted about a minute later. Three things were tried first and none
+of them was the cause: the gzip header, the formatting runs (a copy of the app's own run, byte for
+byte, still vanished), and the record-level fields. The cause is in the body.
+
+`TextDataEncrypted` is base64 of a gzipped protobuf: `Document { 2: note }`, where the note holds
+
+| field | what | for a note written in one insertion |
+|---|---|---|
+| 2 | the text (UTF-8) | |
+| 3 (x3) | substrings: `{1: {replica, clock}, 2: length, 3: {replica, clock}, 5: index}` | root `(0,0) len 0`, then `(1,0) len N`, then an end sentinel `(0, 0xFFFFFFFF) len 0` |
+| 4 | version vector: `{1: {1: replica uuid, 2: {1: clock}, 2: {1: 1}}}` | clock = `N`, then `1` |
+| 5 (x runs) | formatting runs: `{1: length, 2: paragraph style, 13: timestamp}` | |
+
+- `N` is the text length in **UTF-16 code units** (an emoji counts 2; Arabic letters count 1).
+- The library's schema does not declare fields 3 and 4, so building a note through it drops
+  them. That is why editing a copy of an app-made note works (the unknown fields ride along, as long
+  as the length is unchanged) while every note built from scratch is trashed.
+- The replica UUID must be one that the note's two blobs know (`ReplicaIDToNotesVersionDataEncrypted`
+  and `ReplicaIDToUserIDEncrypted`). Copying the blobs and the replica from any note the app wrote
+  works, and `notes.py` learns them once from the most recent notes and caches them.
+- **A title is an explicit `style_type = 0`.** The app writes `{1: 0, 9: paragraph uuid}` for a
+  title paragraph and omits field 1 for body text. A protobuf binding that drops default values
+  cannot write that zero, so the runs are encoded by hand.
+- Moving a note to Recently Deleted is a parent and folder-reference change (`TrashFolder-CloudKit`),
+  not `Deleted = 1`; moving it back restores it.
+
+Verified on one account (iPhone, iOS 26.x): five notes covering plain, pasted-style, title style,
+a 301-unit body (multi-byte lengths) and Arabic plus an emoji all stayed in Notes for the full
+two minutes, round-tripped exactly, and survived delete, undo and move. The body is checked
+byte for byte against a note the app wrote in `tests/test_notes.py`.

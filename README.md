@@ -114,6 +114,16 @@ time, the agent that did it, a plain summary and what's needed to undo it.
 - The log is `.activity/activity.jsonl` next to the server (git-ignored, because it holds event
   and reminder titles); set `ICLOUD_MCP_DATA_DIR` to move it. Logging never makes a tool fail.
 
+### Notes
+
+`create_note`, `move_note`, `delete_note`.
+
+- **Write-only on purpose:** no tool reads the contents of existing notes. `create_note(text,
+  folder)` makes a note whose first line is the title; `delete_note` moves it to Recently Deleted
+  (kept 30 days), and `undo` reverses a create, move or delete.
+- **One-time setup:** the first `create_note` learns your account's note author identity from a
+  note the Notes app wrote; if you have none, create any note in the app first. It is cached in
+  `.notes_identity` (git-ignored).
 ## Setup
 
 Requires Python 3.10+ and [uv](https://docs.astral.sh/uv/).

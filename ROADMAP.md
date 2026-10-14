@@ -87,7 +87,8 @@ The service exposes `folders`, `get`, `in_folder`, `iter_all`, `recents`,
 - [ ] Search notes by text; show recent notes. M, high
 - [ ] Export a note to Markdown / HTML. S, med
 - [ ] Download a note's attachments. S, med
-- [ ] Writing notes. L, high. Not offered by the library; would need reverse-engineering.
+- [x] Writing notes: `create_note`, `move_note`, `delete_note` (with undo), built from the app's own
+      records. Not done: editing or appending to an existing note, checklists, attachments, folders.
 
 ## 5. iCloud Drive (library: `create_folders`, `get_file`, `send_file`, `rename_items`, ...)
 
