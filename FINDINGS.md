@@ -17,11 +17,14 @@ the post-iOS 13 format). Treat it as observations, not a spec.
 | Early reminder units 1 = hours, 2 = days | Created "1 day before" (`unit 2, count -1`) and "3 hours before" (`unit 1, count -3`) in the app and decoded both. |
 | Urgent = asset + encrypted checksum | Turned Urgent on in the app: two new fields appeared. Wrote the same shape from Python; the reminder fired as an Urgent alarm on the phone (confirmed by the author). |
 
-Verified individually against app-made records: monthly (`2`), hours (`1`),
-days (`2`). The remaining repeat values (`0` daily, `1` weekly, `3` yearly)
-follow from the zero-based scheme and match
-[timlaing/pyicloud#402](https://github.com/timlaing/pyicloud/pull/402) but were
-not each confirmed against an app-made rule.
+Verified individually against app-made records: all four repeat values
+(`0` daily, `1` weekly, `2` monthly, `3` yearly; each created in the app and
+read back raw, then shown correctly by iCloud.com for rules written from
+Python), hours (`1`) and days (`2`). They also match
+[timlaing/pyicloud#402](https://github.com/timlaing/pyicloud/pull/402).
+
+An all-day due date is stored as midnight UTC of that date with no `TimeZone`
+field. Writing local midnight instead lands on the previous day east of UTC.
 
 ## 1. Repeat (RecurrenceRule) numbering is zero-based
 

@@ -10,7 +10,7 @@ import json
 import os
 import time
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from pyicloud import PyiCloudService
@@ -73,8 +73,10 @@ def _parse_due(due: str):
     if not due:
         return None, False
     if len(due) == 10:
+        # The app stores an all-day date as midnight UTC of that date, no time zone.
+        # Local midnight would land on the previous day for zones east of UTC.
         d = date.fromisoformat(due)
-        return datetime(d.year, d.month, d.day, tzinfo=get_localzone()), True
+        return datetime(d.year, d.month, d.day, tzinfo=timezone.utc), True
     dt = datetime.fromisoformat(due)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=get_localzone())
@@ -82,7 +84,8 @@ def _parse_due(due: str):
 
 
 def _out(r, list_title: str | None = None) -> dict:
-    due = r.due_date.astimezone(get_localzone()) if r.due_date else None
+    # All-day dates are midnight UTC, so read the date in UTC; timed ones in local time.
+    due = r.due_date.astimezone(timezone.utc if r.all_day else get_localzone()) if r.due_date else None
     return {
         "id": r.id,
         "list": list_title,
@@ -436,7 +439,7 @@ def register(mcp):
             all_day=all_day,
             priority=priority,
             flagged=flagged,
-            time_zone=get_localzone_name(),
+            time_zone=None if all_day else get_localzone_name(),
         )
         svc = _service()
         _apply_repeat(svc, r, repeat or None, repeat_interval, repeat_count)
@@ -481,7 +484,7 @@ def register(mcp):
             r.flagged = flagged
         if due is not None:
             r.due_date, r.all_day = _parse_due(due)
-            r.time_zone = get_localzone_name()
+            r.time_zone = None if r.all_day else get_localzone_name()
         svc.update(r)
         _apply_repeat(svc, svc.get(id), repeat, repeat_interval, repeat_count)
         _apply_tags(svc, svc.get(id), tags)
