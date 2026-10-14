@@ -2,11 +2,14 @@
 ICLOUD_USERNAME  - Apple ID email
 ICLOUD_APP_PASSWORD - app-specific password (appleid.apple.com)
 """
+import functools
 import os
+import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
 
 import caldav
+import niquests
 from icalendar import Alarm, Calendar, Event
 from tzlocal import get_localzone
 from mcp.server.fastmcp import FastMCP
@@ -14,6 +17,35 @@ from mcp.server.fastmcp import FastMCP
 mcp = FastMCP("icloud-calendar")
 
 _client = None
+
+
+_NETWORK_ERRORS = (niquests.exceptions.ConnectionError, niquests.exceptions.Timeout)
+
+
+def _reset_client() -> None:
+    global _client, _event_calendars
+    _client = None
+    _event_calendars = None
+
+
+def _with_retry(fn, attempts: int = 3):
+    """Call fn(); on a dropped connection or DNS blip, reset the client and retry."""
+    for i in range(attempts):
+        try:
+            return fn()
+        except _NETWORK_ERRORS:
+            if i == attempts - 1:
+                raise
+            _reset_client()
+            time.sleep(1 + i)
+
+
+def _retry(fn):
+    """Retry a tool on transient network errors (keeps the signature for MCP's schema)."""
+    @functools.wraps(fn)
+    def wrapper(*a, **kw):
+        return _with_retry(lambda: fn(*a, **kw))
+    return wrapper
 
 
 def _principal():
@@ -175,12 +207,14 @@ def _find(cal, uid: str):
 
 
 @mcp.tool()
+@_retry
 def list_calendars() -> list[str]:
     """List the names of all iCloud calendars."""
     return [c.name for c in _principal().calendars()]
 
 
 @mcp.tool()
+@_retry
 def list_events(calendar: str, start: str, end: str) -> list[dict]:
     """List events in a calendar between ISO datetimes (or dates) start and end.
     All-day events are included and flagged with all_day=true."""
@@ -189,6 +223,7 @@ def list_events(calendar: str, start: str, end: str) -> list[dict]:
 
 
 @mcp.tool()
+@_retry
 def create_event(
     calendar: str,
     summary: str,
@@ -228,7 +263,8 @@ def create_event(
     cal.add("prodid", "-//icloud-mcp//EN")
     cal.add("version", "2.0")
     ev = Event()
-    ev.add("uid", str(uuid.uuid4()))
+    uid = str(uuid.uuid4())
+    ev.add("uid", uid)
     ev.add("summary", summary)
     ev.add("dtstart", s)
     ev.add("dtend", e)
@@ -242,11 +278,23 @@ def create_event(
     if description:
         ev.add("description", description)
     cal.add_component(ev)
-    created = _calendar(calendar).save_event(cal.to_ical().decode())
+    target = _calendar(calendar)
+    try:
+        created = target.save_event(cal.to_ical().decode())
+    except _NETWORK_ERRORS:
+        # The request may have succeeded before the connection dropped. If our uid is
+        # already there, return it; otherwise re-raise so _retry sends the create again.
+        _reset_client()
+        try:
+            return _summarize(_find(_calendar(calendar), uid))
+        except ValueError:
+            pass
+        raise
     return _summarize(created)
 
 
 @mcp.tool()
+@_retry
 def update_event(
     calendar: str,
     uid: str,
@@ -308,6 +356,7 @@ def update_event(
 
 
 @mcp.tool()
+@_retry
 def delete_event(calendar: str, uid: str) -> str:
     """Delete an event by uid. For a repeating event this deletes the whole series."""
     _find(_calendar(calendar), uid).delete()
@@ -339,6 +388,7 @@ def _event_calendar_list() -> list:
 
 
 @mcp.tool()
+@_retry
 @reminders._reset_on_error
 def agenda(start: str = "", days: int = 1, include_overdue: bool = True) -> dict:
     """What's on: events from ALL calendars plus due reminders, in one call.

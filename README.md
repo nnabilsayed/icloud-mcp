@@ -21,6 +21,9 @@ Calendar: `list_calendars`, `list_events`, `create_event`, `update_event`,
 
 Both: `agenda(start, days, include_overdue)` returns events from every calendar,
 reminders due in the range, and overdue reminders in one call (default: today).
+
+Calendar calls retry up to 3 times on dropped connections or DNS blips; a create
+never duplicates an event that was saved before the connection dropped.
 `create_event` / `update_event` take `YYYY-MM-DD` for `start`/`end` to make an
 all-day event (`end` is the last day, inclusive; default is a one-day event).
 They also take `repeat` (`daily|weekly|monthly|yearly`, `none` to remove),
