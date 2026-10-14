@@ -96,6 +96,12 @@ Both go beyond the basics:
   buffer_minutes, all_day_blocks, calendars, limit)`: the open stretches (at least
   `duration_minutes` long) inside working hours across all calendars.
 - `check_conflicts(start, end)`: what overlaps a proposed time.
+- `propose_event(summary, start, end, calendar, location, description, source)`: **email to
+  calendar.** The mail itself comes from a separate mail MCP (for example Gmail); the agent reads
+  it, works out the exact date and time, and calls this first. It writes nothing: it returns
+  warnings (in the past, over a year away, no end time), overlapping events, a possible duplicate
+  (same day, similar title) and ready-made `create_event_args`. Show the draft to the user and call
+  `create_event` only after they agree. This server never reads your mailbox.
 
 ## Activity log and undo
 

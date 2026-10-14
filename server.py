@@ -6,6 +6,7 @@ import functools
 import xml.etree.ElementTree as ET
 import os
 import time
+import re
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from datetime import time as time_of_day
@@ -1107,6 +1108,82 @@ def check_conflicts(start: str, end: str = "", calendars: list[str] | None = Non
     hits = [info for bs, be, info in _busy_intervals(chosen, a, b, True) if bs < b and be > a]
     return {"start": a.isoformat(timespec="minutes"), "end": b.isoformat(timespec="minutes"),
             "free": not hits, "conflicts": hits}
+
+
+_STOP = {"a", "an", "the", "and", "or", "of", "to", "for", "with", "at", "on", "in", "my", "your", "re", "fwd"}
+
+
+def _words(text: str) -> set:
+    return {w for w in re.findall(r"[^\W_]+", text.lower()) if w not in _STOP}
+
+
+def _similar(a: str, b: str) -> bool:
+    """Same event, worded differently: most of the shorter title's words appear in the other."""
+    wa, wb = _words(a), _words(b)
+    if not wa or not wb:
+        return a.strip().lower() == b.strip().lower()
+    return len(wa & wb) / min(len(wa), len(wb)) >= 0.6
+
+
+@mcp.tool()
+@_retry
+def propose_event(summary: str, start: str, end: str = "", calendar: str = "", location: str = "",
+                  description: str = "", source: str = "", now: str = "") -> dict:
+    """Check a calendar event BEFORE creating it, e.g. one an agent read out of an email
+    ("interview confirmed for the 18th at 1pm"). Writes nothing. The agent extracts the title and
+    the exact date/time (start/end as in create_event; resolve "the 18th" to a full date first);
+    this returns the draft plus things to show the user: warnings (date in the past, far in the
+    future, no end given), overlapping events and a possible duplicate (same day, similar title).
+    source: where it came from (e.g. the email subject and sender), kept in the description.
+    Show the draft, and only call create_event with 'create_event_args' once the user agrees.
+    now: override the current time (ISO), for testing."""
+    if not summary.strip():
+        raise ValueError("summary must not be empty")
+    s = _parse_when(start)
+    all_day = _is_all_day(s)
+    warnings = []
+    if all_day:
+        last = _parse_when(end) if end else s
+        if not _is_all_day(last) or last < s:
+            raise ValueError("An all-day event needs end as 'YYYY-MM-DD' on or after start")
+        a, b = datetime.combine(s, time_of_day.min), datetime.combine(last + timedelta(days=1), time_of_day.min)
+        end_out = last.isoformat() if end else ""
+    else:
+        if end:
+            e = _parse_when(end)
+            if _is_all_day(e):
+                raise ValueError("A timed event needs end as an ISO datetime, not a date")
+        else:
+            e = s + timedelta(hours=1)
+            warnings.append("No end time given; assuming one hour.")
+        if e <= s:
+            raise ValueError("end must be after start")
+        a, b = _local_naive(s), _local_naive(e)
+        end_out = e.isoformat(timespec="minutes")
+    current = datetime.fromisoformat(now) if now else datetime.now()
+    if a < current:
+        warnings.append("This is in the past. Check the month and year the email meant.")
+    elif a > current + timedelta(days=365):
+        warnings.append("This is more than a year away. Check the year.")
+    cals = _event_calendar_list()
+    if calendar:
+        _calendar(calendar)  # fails clearly if the name is unknown
+    day_a = datetime.combine(a.date(), time_of_day.min)
+    day_b = datetime.combine(b.date(), time_of_day.min) + timedelta(days=1)
+    same_day = _busy_intervals(cals, day_a, day_b, True)
+    duplicates = [info for _, _, info in same_day if _similar(info["summary"], summary)]
+    if duplicates:
+        warnings.append("An event with a similar title is already on that day; this may be a duplicate.")
+    conflicts = [info for bs, be, info in same_day if bs < b and be > a and info not in duplicates]
+    desc = description.strip()
+    if source.strip():
+        desc = (desc + "\n\n" if desc else "") + f"Source: {source.strip()}"
+    args = {"calendar": calendar, "summary": summary.strip(), "start": start.strip()}
+    for k, v in (("end", end_out), ("location", location), ("description", desc)):
+        if v:
+            args[k] = v
+    return {"ok_to_create": not duplicates, "warnings": warnings, "conflicts": conflicts,
+            "possible_duplicates": duplicates, "create_event_args": args}
 
 
 @mcp.tool()

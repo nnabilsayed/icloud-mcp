@@ -130,7 +130,7 @@ Sensitive. Listed for completeness; recommended to skip or heavily restrict.
 ## 10. Other Apple surfaces we have not looked at
 
 - [ ] Mail via IMAP/SMTP (official, app-specific password): read, search, send. L, med
-- [ ] Email to calendar: "interview confirmed for the 18th at 1pm" becomes an event. L, med
+- [x] Email to calendar: a mail MCP supplies the text, the agent extracts it, `propose_event` checks it (dry run, conflicts, duplicates) and the user confirms before `create_event`. This server has no mailbox access.
 - [ ] Shortcuts/automations hooks. M, high
 - [ ] iCloud Keychain / passwords: never. (listed so nobody asks)
 
