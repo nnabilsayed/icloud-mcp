@@ -6,3 +6,6 @@ __pycache__/
 .urgent_person_id
 *.bin
 _*.json
+
+# local activity log (event and reminder titles): never commit
+.activity/

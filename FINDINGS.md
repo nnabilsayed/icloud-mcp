@@ -173,3 +173,14 @@ the same thing, so extra alarms behave as additional notifications only.
   the app writes when you move a reminder.
 - **`update()` and alarms:** `update()` rewrites the whole `ResolutionTokenMap`, including
   the due-date token an alarm is tied to, so alarms are re-tied after every edit.
+
+## iCloud read-after-write quirks seen while building undo
+
+- A reminder read straight after a write can come back with an out-of-date change tag, so
+  the next write is rejected with `CONFLICT (client oplock error updating record)`. The
+  rejected write changes nothing, so saves retry with a fresh tag.
+- Once, restoring a reminder's title, tags and list in quick succession left the title as a
+  merge of the old and new text ("B origED") and a tag duplicated. It did not reproduce
+  reliably, so undo now re-reads and compares, retries, and reports what still differs.
+- Moving an event's start without giving an end must move the end too. Keeping the old end
+  puts it before the new start and iCloud answers `403 Forbidden`.

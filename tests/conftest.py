@@ -21,6 +21,18 @@ class FakeEvent:
     def icalendar_component(self):
         return self.comp
 
+    @property
+    def data(self) -> str:
+        wrapper = Calendar()
+        wrapper.add("prodid", "-//test//EN")
+        wrapper.add("version", "2.0")
+        wrapper.add_component(self.comp)
+        return wrapper.to_ical().decode()
+
+    @data.setter
+    def data(self, ical: str) -> None:
+        self.comp = next(c for c in Calendar.from_ical(ical).walk("VEVENT"))
+
     def save(self):
         pass
 
@@ -50,6 +62,13 @@ class FakeCalendar:
 
     def search(self, start=None, end=None, event=True, expand=True):
         return list(self.items)  # the real server filtering is what _search_range corrects for
+
+
+@pytest.fixture(autouse=True)
+def _private_activity_log(tmp_path, monkeypatch):
+    """Never touch the real activity log from tests."""
+    monkeypatch.setenv("ICLOUD_MCP_DATA_DIR", str(tmp_path / "activity"))
+    monkeypatch.setenv("ICLOUD_MCP_AGENT", "pytest")
 
 
 @pytest.fixture

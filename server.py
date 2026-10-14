@@ -9,6 +9,7 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from datetime import time as time_of_day
 
+import activity
 import caldav
 import niquests
 from icalendar import Alarm, Calendar, Event
@@ -16,6 +17,7 @@ from tzlocal import get_localzone
 from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("icloud-calendar")
+activity.set_agent_resolver(lambda: mcp.get_context().session.client_params.clientInfo.name)
 
 _client = None
 
@@ -223,6 +225,13 @@ def list_events(calendar: str, start: str, end: str) -> list[dict]:
     return [_summarize(e) for e in found]
 
 
+def _log_created(calendar: str, summary: str, out: dict) -> dict:
+    out["log_id"] = activity.record(
+        "create_event", f"Created event '{summary}' ({out['start']}) in {calendar}",
+        undo={"op": "delete_event", "calendar": calendar, "uid": out["uid"]})
+    return out
+
+
 @mcp.tool()
 @_retry
 def create_event(
@@ -298,11 +307,11 @@ def create_event(
         # already there, return it; otherwise re-raise so _retry sends the create again.
         _reset_client()
         try:
-            return {**_summarize(_find(_calendar(calendar), uid)), "conflicts": conflicts}
+            return _log_created(calendar, summary, {**_summarize(_find(_calendar(calendar), uid)), "conflicts": conflicts})
         except ValueError:
             pass
         raise
-    return {**_summarize(created), "conflicts": conflicts}
+    return _log_created(calendar, summary, {**_summarize(created), "conflicts": conflicts})
 
 
 @mcp.tool()
@@ -330,6 +339,7 @@ def update_event(
     [] removes all; omit to leave them alone.
     On a repeating event this changes the whole series."""
     ev = _find(_calendar(calendar), uid)
+    before = ev.data  # the whole event as it is now, so the change can be undone
     comp = ev.icalendar_component
     for key, val in (("summary", summary), ("location", location), ("description", description)):
         if val is not None:
@@ -346,7 +356,10 @@ def update_event(
                     raise ValueError("An all-day event needs end as 'YYYY-MM-DD'")
                 new_end = new_end + timedelta(days=1)  # inclusive last day -> exclusive DTEND
         elif _is_all_day(new_start) == _is_all_day(cur_start) and cur_end is not None:
-            new_end = cur_end  # same kind as before: keep the existing end
+            try:
+                new_end = new_start + (cur_end - cur_start)  # moving an event keeps its length
+            except TypeError:  # one side is zone-aware and the other isn't
+                new_end = cur_end
         elif _is_all_day(new_start):
             new_end = new_start + timedelta(days=1)  # became all-day: one day
         else:
@@ -364,20 +377,101 @@ def update_event(
     if alerts is not None:
         _set_alerts(comp, alerts)
     ev.save()
-    return _summarize(ev)
+    out = _summarize(ev)
+    changed = [n for n, v in (("title", summary), ("start", start), ("end", end), ("location", location),
+                              ("description", description), ("repeat", repeat), ("alerts", alerts)) if v is not None]
+    out["log_id"] = activity.record(
+        "update_event", f"Updated event '{out['summary']}' in {calendar}: {', '.join(changed) or 'no fields'}",
+        undo={"op": "restore_event", "calendar": calendar, "uid": uid, "ical": before})
+    return out
 
 
 @mcp.tool()
 @_retry
 def delete_event(calendar: str, uid: str) -> str:
-    """Delete an event by uid. For a repeating event this deletes the whole series."""
-    _find(_calendar(calendar), uid).delete()
-    return f"Deleted {uid}"
+    """Delete an event by uid. For a repeating event this deletes the whole series.
+    The deletion is logged and can be undone with the undo tool."""
+    ev = _find(_calendar(calendar), uid)
+    before, title = ev.data, str(ev.icalendar_component.get("summary", ""))
+    ev.delete()
+    log_id = activity.record("delete_event", f"Deleted event '{title}' from {calendar}",
+                             undo={"op": "recreate_event", "calendar": calendar, "ical": before})
+    return f"Deleted {uid} (log id {log_id})"
 
 
 import reminders  # noqa: E402  (CloudKit-backed Reminders tools)
 
 reminders.register(mcp)
+
+
+def _undo_calendar_op(op: dict) -> str:
+    kind = op["op"]
+    if kind == "delete_event":
+        _find(_calendar(op["calendar"]), op["uid"]).delete()
+        return "removed the event that was created"
+    if kind == "restore_event":
+        ev = _find(_calendar(op["calendar"]), op["uid"])
+        ev.data = op["ical"]
+        ev.save()
+        return "restored the event to how it was"
+    if kind == "recreate_event":
+        _calendar(op["calendar"]).save_event(op["ical"])
+        return "recreated the deleted event"
+    raise ValueError(f"Unknown undo operation '{kind}'")
+
+
+@mcp.tool()
+def activity_log(limit: int = 20, agent: str = "", tool: str = "", only_undoable: bool = False) -> list[dict]:
+    """What has been changed through this server, newest first: when, which agent, which tool, a
+    plain summary, whether it can still be undone (undoable) and whether it was undone. Use the
+    id with the undo tool. Filter by agent name or tool; only_undoable hides the rest.
+    Changes made directly in the Calendar/Reminders apps are not recorded here."""
+    return [{"id": r["id"], "when": r["ts"], "agent": r["agent"], "tool": r["tool"], "summary": r["summary"],
+             "undoable": bool(r["undo"]) and not r["undone"], "undone": r["undone"], "batch": r["batch"]}
+            for r in activity.entries(max(1, min(limit, 200)), agent, tool, only_undoable)]
+
+
+@mcp.tool()
+@_retry
+@reminders._reset_on_error
+def undo(entry_id: str = "", batch: str = "") -> dict:
+    """Undo a logged change. entry_id: an id from activity_log; batch: undo every change of one
+    bulk operation (newest first); neither: undo the most recent undoable change by anyone.
+    Calendar changes are restored exactly (create, edit and delete). Reminder edits restore the
+    title, notes, due, priority, flag, completion, repeat, tags, links, alarms, list and parent;
+    early-reminder and Urgent settings are not restored. If something changed since, the undo
+    stops with a clear error and leaves the log entry undoable."""
+    if entry_id and batch:
+        raise ValueError("Give entry_id or batch, not both")
+    if batch:
+        targets = activity.batch_entries(batch)
+        if not targets:
+            raise ValueError(f"No undoable changes found for batch '{batch}'")
+    elif entry_id:
+        row = activity.get(entry_id)
+        if row is None:
+            raise ValueError(f"No log entry '{entry_id}'")
+        if row["undone"]:
+            raise ValueError(f"'{entry_id}' was already undone")
+        if not row["undo"]:
+            raise ValueError(f"'{entry_id}' ({row['tool']}) can't be undone")
+        targets = [row]
+    else:
+        targets = activity.entries(limit=1, only_undoable=True)
+        if not targets:
+            raise ValueError("Nothing to undo")
+    done = []
+    for row in targets:
+        try:
+            op = row["undo"]
+            note = reminders.undo_op(op) if op["op"] in reminders.UNDO_OPS else _undo_calendar_op(op)
+        except Exception as exc:
+            return {"undone": done, "failed": {"id": row["id"], "summary": row["summary"],
+                                                "error": f"{type(exc).__name__}: {exc}"[:300]}}
+        activity.mark_undone(row["id"])
+        done.append({"id": row["id"], "summary": row["summary"], "result": note})
+    activity.record("undo", f"Undid {len(done)} change(s): " + "; ".join(d["summary"] for d in done)[:300])
+    return {"undone": done}
 
 
 _event_calendars: list | None = None

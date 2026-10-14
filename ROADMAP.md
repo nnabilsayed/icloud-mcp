@@ -135,9 +135,9 @@ Sensitive. Listed for completeness; recommended to skip or heavily restrict.
 
 ## 11. Agent-friendly features
 
-- [ ] **Activity log**: what each agent changed and when. M, low
-- [ ] **Undo** the last change (needs the log). M-L, med
-- [ ] **Dry-run / preview mode** for bulk changes with a confirm step. M, low
+- [x] **Activity log**: what each agent changed and when. M, low
+- [x] **Undo** the last change (needs the log). M-L, med
+- [x] **Dry-run / preview mode** for bulk changes with a confirm step. M, low
 - [ ] **Per-agent permissions**: read-only vs read-write, per calendar or list. M, low
 - [ ] **Tool descriptions tuned per client** (fewer round trips for Luna/Hermes). S, low
 - [ ] **Structured error messages** the model can act on (not-found vs auth vs network). S, low

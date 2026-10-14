@@ -31,6 +31,23 @@ buffer_minutes, all_day_blocks, calendars, limit)` returns the open stretches (a
 end)` lists what overlaps a proposed time. `create_event` also reports `conflicts` for a timed
 event (it still creates it; `warn_conflicts=False` skips the check).
 
+## Activity log and undo
+
+Every change made through this server (creating, editing, completing or deleting events and
+reminders, including each item of a bulk operation) is written to a local log with the time,
+the agent that did it, a plain summary and what's needed to undo it.
+
+- `activity_log(limit, agent, tool, only_undoable)` shows it, newest first.
+- `undo(entry_id)` reverses one change; `undo(batch=...)` reverses a whole bulk operation
+  (newest first); `undo()` reverses the most recent undoable change. Calendar changes are
+  restored exactly. Reminder edits restore title, notes, due, priority, flag, completion,
+  repeat, tags, links, alarms, list and parent; early-reminder and Urgent settings are not
+  restored. Undo re-reads the reminder to check it matches, retries, and says so if it can't.
+- Changes made directly in the Calendar/Reminders apps are not recorded.
+- The agent's name comes from the MCP client's name; set `ICLOUD_MCP_AGENT` as a fallback.
+- The log is `.activity/activity.jsonl` next to the server (git-ignored, because it holds event
+  and reminder titles); set `ICLOUD_MCP_DATA_DIR` to move it. Logging never makes a tool fail.
+
 Calendar calls retry up to 3 times on dropped connections or DNS blips; a create
 never duplicates an event that was saved before the connection dropped.
 `create_event` / `update_event` take `YYYY-MM-DD` for `start`/`end` to make an

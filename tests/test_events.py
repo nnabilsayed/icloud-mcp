@@ -205,3 +205,14 @@ def test_search_range_boundaries_are_half_open(cal):
     make(cal, "inside", start="2026-10-14T10:00:00", end="2026-10-14T12:00:00")
     got = [S._summarize(e)["summary"] for e in S._search_range(cal, datetime(2026, 10, 14, 10), datetime(2026, 10, 14, 12))]
     assert got == ["inside"]
+
+
+def test_moving_an_event_keeps_its_length(cal):
+    ev = make(cal, start="2026-11-05T10:00:00", end="2026-11-05T11:30:00")
+    up = S.update_event("Home", ev["uid"], start="2026-11-09T14:00:00")  # a later day: the end must follow
+    assert (up["start"], up["end"]) == ("2026-11-09T14:00:00", "2026-11-09T15:30:00")
+    day = make(cal, "trip", start="2026-11-10", end="2026-11-12")  # three days
+    up = S.update_event("Home", day["uid"], start="2026-12-01")
+    assert (up["start"], up["end"], up["all_day"]) == ("2026-12-01", "2026-12-03", True)
+    up = S.update_event("Home", ev["uid"], start="2026-11-09T16:00:00", end="2026-11-09T16:45:00")  # explicit end still wins
+    assert up["end"] == "2026-11-09T16:45:00"

@@ -14,6 +14,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import activity
 from pyicloud import PyiCloudService
 from tzlocal import get_localzone, get_localzone_name
 
@@ -817,6 +818,157 @@ def _plan_bulk(act, chosen, target, shift_days, new_due, set_priority):
     return plan, skipped
 
 
+def _is_conflict(exc: Exception) -> bool:
+    return "CONFLICT" in str(exc)
+
+
+def _update(svc, r) -> None:
+    """svc.update(r), retried when iCloud answers CONFLICT. That means the change tag we hold is
+    already out of date, which happens when a reminder is read straight after a write. The rejected
+    write changed nothing, so retrying with a fresh tag is safe (the last writer wins, as ever)."""
+    for attempt in range(3):
+        try:
+            svc.update(r)
+            return
+        except Exception as exc:
+            if not _is_conflict(exc) or attempt == 2:
+                raise
+            time.sleep(1.5 * (attempt + 1))
+            rec = _lookup_record(svc, svc._writes._reminder_record_name(r.id))
+            if rec:
+                r.record_change_tag = rec.get("recordChangeTag")
+
+
+# --- Undo support ----------------------------------------------------------------
+UNDO_OPS = ("delete_reminder", "undelete_reminder", "restore_reminder")
+
+
+def _snapshot(svc, r, groups: set) -> dict:
+    """What _restore needs to put a reminder back. The basics are free; `groups` limits the extra
+    lookups (repeat, tags, links, alarms) to the parts that are about to change."""
+    snap = {"id": r.id, "title": r.title, "notes": r.desc, "priority": r.priority, "flagged": r.flagged,
+            "completed": r.completed, "due": _out(r, None)["due"], "parent": r.parent_reminder_id,
+            "list_id": r.list_id}
+    if "repeat" in groups:
+        rules = _read_rules(svc, r)
+        snap["repeat"] = ({"wire": rules[0]["wire"], "interval": rules[0]["interval"], "count": rules[0]["count"] or 0}
+                          if rules else None)
+    if "tags" in groups:
+        snap["tags"] = [h.name for h in svc.tags_for(r)]
+    if "links" in groups:
+        snap["links"] = [x["url"] for x in _read_links(svc, r) if "url" in x]
+    if "alarms" in groups:
+        snap["alarms"] = [a["at"].replace(second=0, microsecond=0).isoformat(timespec="minutes")
+                          for a in _read_alarms(svc, r) if a["kind"] == "date"]
+    return snap
+
+
+def _norm(value):
+    """Order-insensitive form for comparing snapshot values."""
+    return sorted(value) if isinstance(value, list) else value
+
+
+def _restore(svc, snap: dict, attempts: int = 3) -> None:
+    """Restore, then re-read and check. iCloud sometimes merges quick successive writes to one
+    reminder (a title once came back as a mix of the old and new text), so a restore that doesn't
+    match is repeated, and reported honestly if it still doesn't."""
+    groups = {g for g in ("repeat", "tags", "links", "alarms") if g in snap}
+    differs = []
+    for attempt in range(attempts):
+        _restore_once(svc, snap)
+        now = _snapshot(svc, svc.get(snap["id"]), groups)
+        differs = [k for k in snap if k != "id" and _norm(now.get(k)) != _norm(snap[k])]
+        if not differs:
+            return
+        time.sleep(2)
+    raise ValueError(f"Restored most of it, but these still differ from before: {', '.join(differs)}. "
+                     "The log entry stays undoable; try the undo again in a minute.")
+
+
+def _restore_once(svc, snap: dict) -> None:
+    """Put back the parts present in the snapshot (a snapshot may hold only some of them)."""
+    r = svc.get(snap["id"])
+    if r.deleted:
+        raise ValueError("That reminder has been deleted since; undo the deletion first")
+    if "title" in snap:
+        r.title = snap["title"]
+    if "notes" in snap:
+        r.desc = snap["notes"]
+    for key in ("priority", "flagged", "completed"):
+        if key in snap:
+            setattr(r, key, snap[key])
+    if "due" in snap:
+        r.due_date, r.all_day = _parse_due(snap["due"] or "")
+        r.time_zone = None if (r.all_day or not r.due_date) else get_localzone_name()
+    if "parent" in snap:
+        r.parent_reminder_id = snap["parent"]
+    _update(svc, r)
+    names = {v: k for k, v in _FREQ.items()}
+    if "repeat" in snap:
+        rule = snap["repeat"]
+        _apply_repeat(svc, svc.get(snap["id"]), names[rule["wire"]] if rule else "none",
+                      rule["interval"] if rule else 1, rule["count"] if rule else 0)
+    if "tags" in snap:
+        _apply_tags(svc, svc.get(snap["id"]), snap["tags"])
+    if "links" in snap:
+        _apply_links(svc, svc.get(snap["id"]), snap["links"])
+    if "alarms" in snap:
+        _apply_alarms(svc, svc.get(snap["id"]), snap["alarms"])
+    if "list_id" in snap and svc.get(snap["id"]).list_id != snap["list_id"]:
+        target = next((l for l in svc.lists() if l.id == snap["list_id"] and not l.deleted), None)
+        if target is None:
+            raise ValueError("The list this reminder was in no longer exists")
+        kids = _subtasks_of(svc, svc.get(snap["id"]))  # subtasks travel with their parent
+        _move_reminder(svc, svc.get(snap["id"]), target)
+        for kid in kids:
+            _move_reminder(svc, svc.get(kid.id), target)
+    _sync_alarm_nonces(svc, svc.get(snap["id"]))
+
+
+def _delete_with_subtasks(svc, rid: str) -> list[str]:
+    """Delete a reminder and its subtasks (as the app does); returns every id that was deleted."""
+    r = svc.get(rid)
+    gone = []
+    for kid in _subtasks_of(svc, r):
+        svc.delete(svc.get(kid.id))
+        gone.append(kid.id)
+    svc.delete(svc.get(rid))
+    return [rid] + gone
+
+
+def _undelete(svc, rid: str) -> None:
+    """Flip a soft-deleted reminder back (the record is kept with Deleted=1)."""
+    w = svc._writes
+    rec = _lookup_record(svc, w._reminder_record_name(rid))
+    if rec is None:
+        raise ValueError("That reminder no longer exists on iCloud, so it can't be restored")
+    tm = json.loads(rec["fields"]["ResolutionTokenMap"]["value"]) if rec["fields"].get("ResolutionTokenMap", {}).get("value") else None
+    w._submit_single_record_update(
+        operation_name="Restore reminder", record_name=w._reminder_record_name(rid), record_type="Reminder",
+        record_change_tag=rec.get("recordChangeTag"), model_obj=SimpleNamespace(record_change_tag=None), fields={
+            "Deleted": {"type": "INT64", "value": 0},
+            "ResolutionTokenMap": {"type": "STRING", "value": _merge_token_map(tm, ["deleted", "lastModifiedDate"])},
+            "LastModifiedDate": {"type": "TIMESTAMP", "value": int(time.time() * 1000)},
+        })
+
+
+@_reset_on_error
+def undo_op(op: dict) -> str:
+    svc = _service()
+    kind = op["op"]
+    if kind == "delete_reminder":
+        _delete_with_subtasks(svc, op["id"])
+        return "removed the reminder that was created"
+    if kind == "undelete_reminder":
+        for rid in op["ids"]:
+            _undelete(svc, rid)
+        return f"restored {len(op['ids'])} reminder(s)"
+    if kind == "restore_reminder":
+        _restore(svc, op["snapshot"])
+        return "restored the reminder to how it was"
+    raise ValueError(f"Unknown undo operation '{kind}'")
+
+
 def _detail(svc, rid: str, list_title: str | None = None) -> dict:
     """Fresh read of one reminder including repeat rule and tags."""
     r = svc.get(rid)
@@ -963,7 +1115,11 @@ def register(mcp):
             _set_early(svc, r.id, early_days, _UNIT_DAYS)
         if urgent:
             _set_urgent(svc, r.id)
-        return _detail(svc, r.id, l.title)
+        out = _detail(svc, r.id, l.title)
+        out["log_id"] = activity.record(
+            "create_reminder", f"Created {'subtask' if parent_id else 'reminder'} '{title}' in {l.title}",
+            undo={"op": "delete_reminder", "id": r.id})
+        return out
 
     @mcp.tool()
     @_reset_on_error
@@ -1006,6 +1162,10 @@ def register(mcp):
         else:
             timed_due = bool(due) and len(due.strip()) != 10
         _validate_extras(links, alarms, timed_due)
+        groups = {g for g, v in (("repeat", repeat), ("tags", tags), ("links", links)) if v is not None}
+        if alarms is not None or due is not None:
+            groups.add("alarms")
+        before = _snapshot(svc, r, groups)
         if title is not None:
             r.title = title
         if notes is not None:
@@ -1033,7 +1193,7 @@ def register(mcp):
             r.time_zone = None if r.all_day else get_localzone_name()
             if alarms is None:
                 moved_alarms = _alarms_after_due_change(old_date_alarms, old_due, bool(r.due_date) and not r.all_day, notify)
-        svc.update(r)
+        _update(svc, r)
         _apply_repeat(svc, svc.get(id), repeat, repeat_interval, repeat_count)
         _apply_tags(svc, svc.get(id), tags)
         _apply_links(svc, svc.get(id), links)
@@ -1051,7 +1211,15 @@ def register(mcp):
             for kid in kids:
                 _move_reminder(svc, svc.get(kid.id), move_target)
         _sync_alarm_nonces(svc, svc.get(id))
-        return _detail(svc, id)
+        out = _detail(svc, id)
+        changed = [n for n, v in (("title", title), ("due", due), ("notes", notes), ("priority", priority),
+                                  ("flag", flagged), ("repeat", repeat), ("tags", tags), ("links", links),
+                                  ("alarms", alarms), ("list", move_to), ("parent", parent),
+                                  ("early reminder", early_days if early_days is not None else early_hours)) if v is not None]
+        out["log_id"] = activity.record(
+            "update_reminder", f"Updated reminder '{out['title']}': {', '.join(changed) or 'no fields'}",
+            undo={"op": "restore_reminder", "snapshot": before})
+        return out
 
     @mcp.tool()
     @_reset_on_error
@@ -1059,21 +1227,27 @@ def register(mcp):
         """Mark a reminder complete (or incomplete with completed=False)."""
         svc = _service()
         r = svc.get(id)
+        was = r.completed
         r.completed = completed
-        svc.update(r)
+        _update(svc, r)
         _sync_alarm_nonces(svc, svc.get(id))
-        return _out(svc.get(id))
+        out = _out(svc.get(id))
+        out["log_id"] = activity.record(
+            "complete_reminder", f"Marked reminder '{out['title']}' {'complete' if completed else 'incomplete'}",
+            undo={"op": "restore_reminder", "snapshot": {"id": id, "completed": was}})
+        return out
 
     @mcp.tool()
     @_reset_on_error
     def delete_reminder(id: str) -> str:
         """Delete a reminder by id."""
         svc = _service()
-        r = svc.get(id)
-        for kid in _subtasks_of(svc, r):  # the app removes a reminder's subtasks with it
-            svc.delete(svc.get(kid.id))
-        svc.delete(svc.get(id))
-        return f"Deleted {id}"
+        title = svc.get(id).title
+        gone = _delete_with_subtasks(svc, id)  # the app removes a reminder's subtasks with it
+        log_id = activity.record(
+            "delete_reminder", f"Deleted reminder '{title}'" + (f" and {len(gone) - 1} subtask(s)" if len(gone) > 1 else ""),
+            undo={"op": "undelete_reminder", "ids": gone})
+        return f"Deleted {id} (log id {log_id})"
 
     _BULK_ACTIONS = ("complete", "uncomplete", "flag", "unflag", "move", "reschedule", "set_priority", "delete")
 
@@ -1150,31 +1324,37 @@ def register(mcp):
             raise ValueError(f"{len(chosen)} reminders match; narrow it to 50 or fewer per call")
         plan, skipped = _plan_bulk(act, chosen, target, shift_days, new_due, set_priority)
         errors = []
+        bid = None
         if apply:
-            for item in plan:
-                try:
-                    rid = item["id"]
-                    if act == "complete":
-                        complete_reminder(rid, True)
-                    elif act == "uncomplete":
-                        complete_reminder(rid, False)
-                    elif act == "flag":
-                        update_reminder(id=rid, flagged=True)
-                    elif act == "unflag":
-                        update_reminder(id=rid, flagged=False)
-                    elif act == "move":
-                        update_reminder(id=rid, move_to=to_list)
-                    elif act == "reschedule":
-                        update_reminder(id=rid, due=item["new_due"])
-                    elif act == "set_priority":
-                        update_reminder(id=rid, priority=_PRIORITY[set_priority.strip().lower()])
-                    elif act == "delete":
-                        delete_reminder(rid)
-                except Exception as exc:
-                    errors.append({"id": item["id"], "title": item["title"], "error": f"{type(exc).__name__}: {exc}"[:200]})
+            with activity.batch() as bid:
+                for item in plan:
+                    try:
+                        rid = item["id"]
+                        if act == "complete":
+                            complete_reminder(rid, True)
+                        elif act == "uncomplete":
+                            complete_reminder(rid, False)
+                        elif act == "flag":
+                            update_reminder(id=rid, flagged=True)
+                        elif act == "unflag":
+                            update_reminder(id=rid, flagged=False)
+                        elif act == "move":
+                            update_reminder(id=rid, move_to=to_list)
+                        elif act == "reschedule":
+                            update_reminder(id=rid, due=item["new_due"])
+                        elif act == "set_priority":
+                            update_reminder(id=rid, priority=_PRIORITY[set_priority.strip().lower()])
+                        elif act == "delete":
+                            delete_reminder(rid)
+                    except Exception as exc:
+                        errors.append({"id": item["id"], "title": item["title"], "error": f"{type(exc).__name__}: {exc}"[:200]})
         out = {"action": act, "applied": bool(apply), "count": len(plan), "items": plan, "skipped": skipped}
         if errors:
             out["errors"] = errors
-        if not apply:
+        if apply:
+            out["batch"] = bid
+            activity.record("bulk_reminders", f"Bulk {act}: {len(plan) - len(errors)} of {len(plan)} reminder(s) "
+                            f"(batch {bid}; undo with undo(batch='{bid}'))")
+        else:
             out["note"] = "Preview only. Call again with the same arguments plus apply=True to do it."
         return out
