@@ -133,3 +133,21 @@ If you know how Apple computes it, please say so.
   and DNS failures against `p*-ckdatabasews.icloud.com` occurred; retrying once
   is enough.
 
+## Time alarms are an Alarm + AlarmTrigger pair tied to the due date
+
+An app-made timed reminder has an `Alarm` record (`AlarmUID`, `Reminder`, `TriggerID`,
+`DueDateResolutionTokenAsNonce`) and an `AlarmTrigger` record (`Type=Date`,
+`DateComponentsData`, `Alarm`). `DateComponentsData` is `BYTES`: base64 of compact JSON
+with the wall-clock parts and zone, e.g.
+`{"hour":13,"timeZone":{"identifier":"Africa\/Cairo"},"year":2026,"era":1,"day":31,"month":10,"minute":0,"second":0}`.
+
+`DueDateResolutionTokenAsNonce` ties the alarm to one version of the due date: across 8
+app-made alarms it equals `counter * 1e11 + modificationTime` of the reminder's
+`dueDate` entry in `ResolutionTokenMap`. pyicloud's `add_location_trigger` rewrites the
+whole token map with only the fields it touched, which drops the `dueDate` entry, so
+this project merges into the existing map instead.
+
+Apple can also leave a reminder pointing at an alarm record that no longer exists
+(`NOT_FOUND`); `alarms_for` raises for such reminders, so alarms are read raw and
+dangling ids are skipped.
+

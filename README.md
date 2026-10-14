@@ -39,6 +39,13 @@ before); on update it replaces the existing alerts and `[]` clears them.
 Reminders: `list_reminder_lists`, `list_reminders`, `create_reminder`,
 `update_reminder`, `complete_reminder`, `delete_reminder`.
 
+`create_reminder` / `update_reminder` also take `links` (URLs to attach; on update the
+complete set, `[]` removes all) and `alarms` (extra time alarms, each
+`YYYY-MM-DDTHH:MM` local or `due` for the due time; on update the complete set, `[]`
+removes them; location alarms are never touched). Reminder details report `links` and
+`alarms`. `list_reminders` has smart views: `flagged=True`, and
+`priority='high'|'medium'|'low'|'none'|'any'`, sorted most urgent first.
+
 `create_reminder` / `update_reminder` accept: `due` (`YYYY-MM-DD` for all-day,
 or an ISO datetime in local time), `notes`, `priority`, `flagged`,
 `repeat` (`daily|weekly|monthly|yearly`, `repeat_interval`, `repeat_count`),
