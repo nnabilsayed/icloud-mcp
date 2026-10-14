@@ -24,6 +24,8 @@ They also take `repeat` (`daily|weekly|monthly|yearly`, `none` to remove),
 `repeat_interval`, and either `repeat_count` or `repeat_until`; weekly also
 accepts `repeat_days` like `["MO","WE"]`. Editing or deleting a repeating event
 affects the whole series.
+`alerts` is a list of minutes before the start (`[30, 1440]` = 30 minutes and 1 day
+before); on update it replaces the existing alerts and `[]` clears them.
 
 Reminders: `list_reminder_lists`, `list_reminders`, `create_reminder`,
 `update_reminder`, `complete_reminder`, `delete_reminder`.

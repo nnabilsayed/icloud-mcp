@@ -7,7 +7,7 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 
 import caldav
-from icalendar import Calendar, Event
+from icalendar import Alarm, Calendar, Event
 from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("icloud-calendar")
@@ -97,6 +97,30 @@ def _describe_rrule(comp):
     return out
 
 
+def _set_alerts(comp, minutes: list[int]) -> None:
+    """Replace all alerts on an event with one display alert per entry (minutes before start)."""
+    if any(m < 0 for m in minutes):
+        raise ValueError("alerts are minutes BEFORE the start, so they must be 0 or more")
+    comp.subcomponents = [c for c in comp.subcomponents if c.name != "VALARM"]
+    for m in sorted(set(minutes), reverse=True):
+        alarm = Alarm()
+        alarm.add("action", "DISPLAY")
+        alarm.add("description", str(comp.get("summary", "Reminder")))
+        alarm.add("trigger", timedelta(minutes=-m))
+        comp.add_component(alarm)
+
+
+def _alert_minutes(comp) -> list[int]:
+    out = []
+    for sub in comp.subcomponents:
+        if sub.name != "VALARM" or not sub.get("trigger"):
+            continue
+        trig = sub["trigger"].dt
+        if isinstance(trig, timedelta):  # relative alarms only; absolute ones are skipped
+            out.append(int(round(-trig.total_seconds() / 60)))
+    return sorted(out, reverse=True)
+
+
 def _summarize(ev) -> dict:
     comp = ev.icalendar_component
     start = comp.get("dtstart").dt if comp.get("dtstart") else None
@@ -111,6 +135,7 @@ def _summarize(ev) -> dict:
         "end": end.isoformat() if end else (start.isoformat() if all_day and start else None),
         "all_day": all_day,
         "repeat": _describe_rrule(comp),
+        "alerts": _alert_minutes(comp),
         "recurring": bool(comp.get("rrule") or comp.get("recurrence-id")),
         "location": str(comp.get("location", "")),
         "description": str(comp.get("description", "")),
@@ -157,6 +182,7 @@ def create_event(
     repeat_count: int = 0,
     repeat_until: str = "",
     repeat_days: list[str] | None = None,
+    alerts: list[int] | None = None,
 ) -> dict:
     """Create an event. start/end are ISO datetimes; end defaults to start + 1 hour.
     All-day: pass start as 'YYYY-MM-DD'. end is then the last day (inclusive, also
@@ -164,7 +190,9 @@ def create_event(
     Repeat: repeat='daily'|'weekly'|'monthly'|'yearly' (omit for none), every
     repeat_interval units. It runs forever unless you give repeat_count (total
     occurrences) or repeat_until ('YYYY-MM-DD', inclusive), not both. For weekly,
-    repeat_days like ['MO','WE'] picks weekdays (default: the start's weekday)."""
+    repeat_days like ['MO','WE'] picks weekdays (default: the start's weekday).
+    alerts: notify N minutes before the start, e.g. [30, 1440] = 30 minutes and 1 day
+    before. For all-day events the start is midnight, so 900 = 9:00 the day before."""
     s = _parse_when(start)
     if _is_all_day(s):
         last = _parse_when(end) if end else s
@@ -188,6 +216,8 @@ def create_event(
     ev.add("dtstamp", datetime.now(timezone.utc))
     if repeat:
         ev.add("rrule", _build_rrule(s, repeat, repeat_interval, repeat_count, repeat_until, repeat_days))
+    if alerts:
+        _set_alerts(ev, alerts)
     if location:
         ev.add("location", location)
     if description:
@@ -211,11 +241,14 @@ def update_event(
     repeat_count: int = 0,
     repeat_until: str = "",
     repeat_days: list[str] | None = None,
+    alerts: list[int] | None = None,
 ) -> dict:
     """Update fields of an existing event by uid. Only provided fields change.
     Use 'YYYY-MM-DD' for start/end to make it all-day (end = last day, inclusive).
     repeat: daily|weekly|monthly|yearly replaces the repeat rule (see create_event
     for the other repeat_* options); 'none' removes it; omit to leave it alone.
+    alerts: the complete list of alerts in minutes before start (replaces existing);
+    [] removes all; omit to leave them alone.
     On a repeating event this changes the whole series."""
     ev = _find(_calendar(calendar), uid)
     comp = ev.icalendar_component
@@ -249,6 +282,8 @@ def update_event(
         comp.pop("rrule", None)
         if repeat.strip().lower() not in ("", "none"):
             comp.add("rrule", _build_rrule(comp["dtstart"].dt, repeat, repeat_interval, repeat_count, repeat_until, repeat_days))
+    if alerts is not None:
+        _set_alerts(comp, alerts)
     ev.save()
     return _summarize(ev)
 
