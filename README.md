@@ -19,23 +19,68 @@ Both go beyond the basics:
 
 ## Tools
 
-Calendar: `list_calendars`, `list_events`, `create_event`, `update_event`,
-`delete_event`.
+### Calendar
 
-Both: `agenda(start, days, include_overdue)` returns events from every calendar,
-reminders due in the range, and overdue reminders in one call (default: today).
+`list_calendars`, `list_events`, `create_event`, `update_event`, `delete_event`.
 
-`find_free_time(duration_minutes, start, days, work_start, work_end, weekdays,
-buffer_minutes, all_day_blocks, calendars, limit)` returns the open stretches (at least
-`duration_minutes` long) inside working hours across all calendars. `check_conflicts(start,
-end)` lists what overlaps a proposed time. `create_event` also reports `conflicts` for a timed
-event (it still creates it; `warn_conflicts=False` skips the check).
+- **All-day events:** `start`/`end` as `YYYY-MM-DD` (`end` is the last day, inclusive; the
+  default is a one-day event).
+- **Repeat:** `repeat` (`daily|weekly|monthly|yearly`, `none` to remove), `repeat_interval`, and
+  either `repeat_count` or `repeat_until`; weekly also takes `repeat_days` like `["MO","WE"]`.
+  Editing or deleting a repeating event affects the whole series.
+- **Alerts:** `alerts` is a list of minutes before the start (`[30, 1440]` = 30 minutes and
+  1 day before); on update it replaces the existing alerts and `[]` clears them.
+- **Moving an event** (a new `start` without an `end`) keeps its length.
+- **Conflicts:** `create_event` reports `conflicts` for a timed event (it still creates it;
+  `warn_conflicts=False` skips the check).
+- Calls retry up to 3 times on dropped connections or DNS blips; a create never duplicates an
+  event that was saved before the connection dropped.
+
+### Reminders
+
+`list_reminder_lists`, `list_reminders`, `create_reminder`, `update_reminder`,
+`complete_reminder`, `delete_reminder`, `add_subtask`, `bulk_reminders`, `create_list`,
+`rename_list`, `delete_list`.
+
+- **Fields:** `due` (`YYYY-MM-DD` for all-day, or an ISO datetime in local time), `notes`,
+  `priority`, `flagged`, `repeat` (`daily|weekly|monthly|yearly` with `repeat_interval`,
+  `repeat_count`; an existing rule is edited in place), `tags`, `early_hours` / `early_days`,
+  and `urgent` (turn-on only).
+- **Links:** `links` attaches URLs (on update: the complete set, `[]` removes all).
+- **Alarms:** `alarms` are extra time alarms, each `YYYY-MM-DDTHH:MM` local or `due` for the due
+  time (on update: the complete set, `[]` removes them; location alarms are never touched). A
+  reminder created or moved to a due *time* gets an alarm at that time by default, because a
+  due time with no alarm never notifies (`notify=False` keeps it silent).
+- **Smart views:** `list_reminders(flagged=True, priority='high'|'medium'|'low'|'none'|'any')`,
+  sorted most urgent first. Details report `links`, `alarms`, `subtasks` and `parent`.
+- **Subtasks:** `add_subtask(parent_id, title, ...)` nests a reminder under another (same list,
+  one level deep). `update_reminder(parent=<id>)` re-parents (`""` makes it top-level), and
+  deleting a reminder deletes its subtasks too.
+- **Move:** `update_reminder(move_to=<list>)` moves a reminder and its subtasks.
+- **Bulk:** `bulk_reminders(action, ...)` runs `complete`, `uncomplete`, `flag`, `unflag`, `move`,
+  `reschedule` (`shift_days` or `new_due`), `set_priority` or `delete` on many reminders. Pick
+  them with `ids` or filters (`list`, `flagged`, `priority`, `overdue`, `due_from`/`due_to`,
+  `title_contains`); at least one is required, max 50 per call. **It only previews unless you
+  pass `apply=True`.**
+- **Lists:** `create_list(name)`, `rename_list(list, new_name)` and `delete_list(list,
+  delete_reminders)`. Names must be unique. A new list appears at the bottom of your lists;
+  there is no colour or icon option yet (the app picks its default). `delete_list` refuses a list
+  that still holds reminders unless `delete_reminders=True`.
+
+### Both
+
+- `agenda(start, days, include_overdue)`: events from every calendar, reminders due in the
+  range, and overdue reminders in one call (default: today).
+- `find_free_time(duration_minutes, start, days, work_start, work_end, weekdays,
+  buffer_minutes, all_day_blocks, calendars, limit)`: the open stretches (at least
+  `duration_minutes` long) inside working hours across all calendars.
+- `check_conflicts(start, end)`: what overlaps a proposed time.
 
 ## Activity log and undo
 
-Every change made through this server (creating, editing, completing or deleting events and
-reminders, including each item of a bulk operation) is written to a local log with the time,
-the agent that did it, a plain summary and what's needed to undo it.
+Every change made through this server (creating, editing, completing or deleting events,
+reminders and lists, including each item of a bulk operation) is written to a local log with the
+time, the agent that did it, a plain summary and what's needed to undo it.
 
 - `activity_log(limit, agent, tool, only_undoable)` shows it, newest first.
 - `undo(entry_id)` reverses one change; `undo(batch=...)` reverses a whole bulk operation
@@ -47,47 +92,6 @@ the agent that did it, a plain summary and what's needed to undo it.
 - The agent's name comes from the MCP client's name; set `ICLOUD_MCP_AGENT` as a fallback.
 - The log is `.activity/activity.jsonl` next to the server (git-ignored, because it holds event
   and reminder titles); set `ICLOUD_MCP_DATA_DIR` to move it. Logging never makes a tool fail.
-
-Calendar calls retry up to 3 times on dropped connections or DNS blips; a create
-never duplicates an event that was saved before the connection dropped.
-`create_event` / `update_event` take `YYYY-MM-DD` for `start`/`end` to make an
-all-day event (`end` is the last day, inclusive; default is a one-day event).
-They also take `repeat` (`daily|weekly|monthly|yearly`, `none` to remove),
-`repeat_interval`, and either `repeat_count` or `repeat_until`; weekly also
-accepts `repeat_days` like `["MO","WE"]`. Editing or deleting a repeating event
-affects the whole series.
-`alerts` is a list of minutes before the start (`[30, 1440]` = 30 minutes and 1 day
-before); on update it replaces the existing alerts and `[]` clears them.
-
-Reminders: `list_reminder_lists`, `list_reminders`, `create_reminder`,
-`update_reminder`, `complete_reminder`, `delete_reminder`.
-
-`create_reminder` / `update_reminder` also take `links` (URLs to attach; on update the
-complete set, `[]` removes all) and `alarms` (extra time alarms, each
-`YYYY-MM-DDTHH:MM` local or `due` for the due time; on update the complete set, `[]`
-removes them; location alarms are never touched). A reminder created or moved to a due *time* gets an alarm at that
-time by default, because a due time with no alarm never notifies (`notify=False` keeps it
-silent).
-
-More reminder tools:
-- `add_subtask(parent_id, title, ...)` nests a reminder under another (same list, one level
-  deep). Details report `subtasks` and each reminder has a `parent`. `update_reminder` can
-  re-parent with `parent=<id>` (`""` makes it top-level), and deleting a reminder deletes its
-  subtasks too.
-- `update_reminder(move_to=<list>)` moves a reminder (and its subtasks) to another list.
-- `bulk_reminders(action, ...)` changes many at once: `complete`, `uncomplete`, `flag`,
-  `unflag`, `move`, `reschedule` (`shift_days` or `new_due`), `set_priority`, `delete`. Pick
-  reminders with `ids` or filters (`list`, `flagged`, `priority`, `overdue`, `due_from`/`due_to`,
-  `title_contains`); at least one is required, max 50 per call. **It only previews unless you
-  pass `apply=True`.**
-- Repeat rules are edited in place (same record), not deleted and recreated. Reminder details report `links` and
-`alarms`. `list_reminders` has smart views: `flagged=True`, and
-`priority='high'|'medium'|'low'|'none'|'any'`, sorted most urgent first.
-
-`create_reminder` / `update_reminder` accept: `due` (`YYYY-MM-DD` for all-day,
-or an ISO datetime in local time), `notes`, `priority`, `flagged`,
-`repeat` (`daily|weekly|monthly|yearly`, `repeat_interval`, `repeat_count`),
-`tags`, `early_hours` / `early_days`, and `urgent` (turn-on only).
 
 ## Setup
 

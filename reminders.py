@@ -839,8 +839,104 @@ def _update(svc, r) -> None:
                 r.record_change_tag = rec.get("recordChangeTag")
 
 
+# --- Lists: create and rename ----------------------------------------------------
+# Matched against lists the Reminders app made and renamed (read raw): a list is one `List`
+# record. The app's rename changes only the encrypted Name and bumps the "name" entry of the
+# token map (counter + 1, new time, same replica). A new list needs no change to the account's
+# list-order record: it shows up at the bottom of the sidebar (verified on a phone).
+_LIST_TOKEN_KEYS = ["minimumSupportedVersion", "name", "parentAccount", "reminderIDsMergeableOrdering",
+                    "shouldAutoCategorizeItems", "shouldCategorizeGroceryItems", "sortingStyle"]
+
+
+def _check_list_name(name: str, lists, ignore_id: str | None = None) -> str:
+    n = name.strip()
+    if not n:
+        raise ValueError("A list needs a name")
+    if len(n) > 200:
+        raise ValueError("That list name is too long (200 characters at most)")
+    for l in lists:
+        if not l.deleted and l.id != ignore_id and l.title.strip().lower() == n.lower():
+            raise ValueError(f"A list named '{l.title}' already exists; names must be unique so tools can tell them apart")
+    return n
+
+
+def _list_fields(name: str, token_map_json: str) -> dict:
+    return {
+        "Name": {"type": "STRING", "value": name, "isEncrypted": True},
+        "SortingStyle": {"type": "STRING", "value": "manual"},
+        "IsLinkedToAccount": {"type": "INT64", "value": 1},
+        "IsGroup": {"type": "INT64", "value": 0},
+        "Imported": {"type": "INT64", "value": 0},
+        "Deleted": {"type": "INT64", "value": 0},
+        "ReminderIDs": {"type": "STRING", "value": "[]"},
+        "ShouldCategorizeGroceryItems": {"type": "INT64", "value": 0, "isEncrypted": True},
+        "ShouldAutoCategorizeItems": {"type": "INT64", "value": 0, "isEncrypted": True},
+        "ResolutionTokenMap": {"type": "STRING", "value": token_map_json},
+    }
+
+
+def _bump_token(old_map: dict | None, key: str, now_apple: float | None = None) -> str:
+    """Bump one entry of a token map the way the app does: counter + 1, new time, same replica."""
+    m = json.loads(json.dumps((old_map or {}).get("map", {})))
+    entry = m.get(key)
+    when = (time.time() - 978307200.0) if now_apple is None else now_apple
+    if entry:
+        entry["counter"] = entry.get("counter", 0) + 1
+        entry["modificationTime"] = when
+    else:
+        from pyicloud.services.reminders._protocol import _generate_resolution_token_map
+
+        m[key] = json.loads(_generate_resolution_token_map([key]))["map"][key]
+    return json.dumps({"map": m}, separators=(",", ":"))
+
+
+def _create_list(svc, name: str) -> str:
+    from pyicloud.common.cloudkit import CKModifyOperation
+    from pyicloud.services.reminders._protocol import _generate_resolution_token_map
+
+    record_name = f"List/{str(uuid.uuid4()).upper()}"
+    op = CKModifyOperation(operationType="create", record=svc._writes._write_record(
+        record_name=record_name, record_type="List",
+        fields=_list_fields(name, _generate_resolution_token_map(_LIST_TOKEN_KEYS))))
+    _modify(svc, [op], "Create list")
+    return record_name
+
+
+def _rename_list(svc, lst, new_name: str) -> None:
+    list_name = lst.id if lst.id.startswith("List/") else f"List/{lst.id}"
+    rec = _lookup_record(svc, list_name)
+    if rec is None:
+        raise ValueError("That list no longer exists")
+    tm = json.loads(rec["fields"]["ResolutionTokenMap"]["value"]) if rec["fields"].get("ResolutionTokenMap", {}).get("value") else None
+    svc._writes._submit_single_record_update(
+        operation_name="Rename list", record_name=list_name, record_type="List",
+        record_change_tag=rec.get("recordChangeTag"), model_obj=SimpleNamespace(record_change_tag=None), fields={
+            "Name": {"type": "STRING", "value": new_name, "isEncrypted": True},
+            "ResolutionTokenMap": {"type": "STRING", "value": _bump_token(tm, "name")},
+        })
+
+
+def _set_list_deleted(svc, list_id: str, deleted: bool) -> None:
+    """What the app writes when you delete a list: Deleted=1, IsLinkedToAccount=0 and a bump of
+    the list's "parentAccount" token (read back from a list deleted in the app). The app also edits
+    the account's list-order record; that is left alone, as it already keeps entries for
+    deleted lists (it holds far more ids than there are lists)."""
+    list_name = list_id if list_id.startswith("List/") else f"List/{list_id}"
+    rec = _lookup_record(svc, list_name)
+    if rec is None:
+        raise ValueError("That list no longer exists")
+    tm = json.loads(rec["fields"]["ResolutionTokenMap"]["value"]) if rec["fields"].get("ResolutionTokenMap", {}).get("value") else None
+    svc._writes._submit_single_record_update(
+        operation_name="Delete list" if deleted else "Restore list", record_name=list_name, record_type="List",
+        record_change_tag=rec.get("recordChangeTag"), model_obj=SimpleNamespace(record_change_tag=None), fields={
+            "Deleted": {"type": "INT64", "value": 1 if deleted else 0},
+            "IsLinkedToAccount": {"type": "INT64", "value": 0 if deleted else 1},  # the app unlinks a deleted list
+            "ResolutionTokenMap": {"type": "STRING", "value": _bump_token(tm, "parentAccount")},
+        })
+
+
 # --- Undo support ----------------------------------------------------------------
-UNDO_OPS = ("delete_reminder", "undelete_reminder", "restore_reminder")
+UNDO_OPS = ("delete_reminder", "undelete_reminder", "restore_reminder", "delete_list", "undelete_list", "rename_list")
 
 
 def _snapshot(svc, r, groups: set) -> dict:
@@ -966,6 +1062,20 @@ def undo_op(op: dict) -> str:
     if kind == "restore_reminder":
         _restore(svc, op["snapshot"])
         return "restored the reminder to how it was"
+    if kind == "delete_list":
+        _set_list_deleted(svc, op["id"], True)
+        return "removed the list that was created"
+    if kind == "undelete_list":
+        _set_list_deleted(svc, op["id"], False)
+        for rid in op.get("reminder_ids", []):
+            _undelete(svc, rid)
+        return f"restored the list and {len(op.get('reminder_ids', []))} reminder(s)"
+    if kind == "rename_list":
+        lst = next((l for l in svc.lists() if l.id == op["id"] and not l.deleted), None)
+        if lst is None:
+            raise ValueError("That list no longer exists")
+        _rename_list(svc, lst, op["name"])
+        return f"renamed the list back to '{op['name']}'"
     raise ValueError(f"Unknown undo operation '{kind}'")
 
 
@@ -1021,6 +1131,60 @@ def register(mcp):
             for l in _service().lists()
             if not l.deleted
         ]
+
+    @mcp.tool()
+    @_reset_on_error
+    def create_list(name: str) -> dict:
+        """Create a new Reminders list (shown at the bottom of your lists in the app).
+        Names must be unique. Returns the new list's id and title; use either as the `list`
+        argument of the other tools. (No colour or icon yet: the app picks its default.)"""
+        svc = _service()
+        n = _check_list_name(name, svc.lists())
+        record_name = _create_list(svc, n)
+        out = {"id": record_name, "title": n}
+        out["log_id"] = activity.record("create_list", f"Created list '{n}'",
+                                        undo={"op": "delete_list", "id": record_name})
+        return out
+
+    @mcp.tool()
+    @_reset_on_error
+    def rename_list(list: str, new_name: str) -> dict:
+        """Rename a list (name or id). Names must be unique."""
+        svc = _service()
+        lst = _list(list)
+        n = _check_list_name(new_name, svc.lists(), ignore_id=lst.id)
+        old = lst.title
+        if n == old:
+            return {"id": lst.id, "title": n, "changed": False}
+        _rename_list(svc, lst, n)
+        out = {"id": lst.id, "title": n, "changed": True}
+        out["log_id"] = activity.record("rename_list", f"Renamed list '{old}' to '{n}'",
+                                        undo={"op": "rename_list", "id": lst.id, "name": old})
+        return out
+
+    @mcp.tool()
+    @_reset_on_error
+    def delete_list(list: str, delete_reminders: bool = False) -> dict:
+        """Delete a list (name or id). A list that still holds reminders is refused unless
+        delete_reminders=True, which deletes those reminders (and their subtasks) too. Both can be
+        undone with the undo tool."""
+        svc = _service()
+        lst = _list(list)
+        live = [r for r in svc.list_reminders(lst.id, include_completed=True).reminders if not r.deleted]
+        if live and not delete_reminders:
+            raise ValueError(f"'{lst.title}' still holds {len(live)} reminder(s). Move them first, or pass "
+                             "delete_reminders=True to delete them with the list.")
+        gone = []
+        for r in live:
+            if not svc.get(r.id).deleted:
+                svc.delete(svc.get(r.id))
+            gone.append(r.id)
+        _set_list_deleted(svc, lst.id, True)
+        out = {"id": lst.id, "title": lst.title, "deleted_reminders": len(gone)}
+        out["log_id"] = activity.record(
+            "delete_list", f"Deleted list '{lst.title}'" + (f" and its {len(gone)} reminder(s)" if gone else ""),
+            undo={"op": "undelete_list", "id": lst.id, "reminder_ids": gone})
+        return out
 
     @mcp.tool()
     @_reset_on_error

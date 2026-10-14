@@ -42,7 +42,7 @@ on); its method names below come from inspecting the installed version.
 - [x] **Subtasks** (the library's `create` takes a parent; verified on a phone)
 - [x] **Priority and flag smart views** ("everything flagged", "all high priority"). S, low
 - [x] **Bulk operations**: complete / move / reschedule many at once, with a preview. M, low
-- [ ] **Create, rename, delete lists**. L, high. NOTE: the library has no call for
+- [x] **Create, rename, delete lists** (done by matching records the app wrote). NOTE: the library has no call for
       this, so it would mean reverse-engineering CloudKit writes the way we did for
       Urgent. Do not promise it.
 - [ ] Recurring reminders: skip one occurrence / complete only this one. M, high

@@ -184,3 +184,22 @@ the same thing, so extra alarms behave as additional notifications only.
   reliably, so undo now re-reads and compares, retries, and reports what still differs.
 - Moving an event's start without giving an end must move the end too. Keeping the old end
   puts it before the new start and iCloud answers `403 Forbidden`.
+
+## Lists: create, rename, delete
+
+A list is one `List` record. Created, renamed and deleted in the Reminders app and read raw:
+
+- **A new list:** `Name` (encrypted string), `SortingStyle=manual`, `IsLinkedToAccount=1`,
+  `IsGroup=0`, `Imported=0`, `Deleted=0`, `ReminderIDs="[]"`, `ShouldCategorizeGroceryItems=0` and
+  `ShouldAutoCategorizeItems=0` (both encrypted), and a `ResolutionTokenMap` with the keys
+  `minimumSupportedVersion, name, parentAccount, reminderIDsMergeableOrdering,
+  shouldAutoCategorizeItems, shouldCategorizeGroceryItems, sortingStyle`. No colour or icon fields
+  when you pick the defaults. The app also edits the account's `ListIDsMergeableOrdering`
+  (an opaque CRDT blob of list ids), but a list written without touching it still shows up on a
+  phone, at the bottom of the sidebar.
+- **Rename:** only the encrypted `Name` changes, and the `name` token goes counter + 1, new time,
+  same replica. The account record is untouched.
+- **Delete:** `Deleted=1`, `IsLinkedToAccount=0` and the `parentAccount` token bumped. The app
+  also edits the account's list-order blob; leaving it alone works (the blob already keeps ids
+  of deleted lists). A list deleted through this project matches one deleted in the app in
+  every field except its name.
