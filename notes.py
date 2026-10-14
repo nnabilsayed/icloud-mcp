@@ -1,7 +1,8 @@
 """Apple Notes tools via iCloud CloudKit (pyicloud): create, move, and delete (to Recently Deleted).
 
 Unofficial, like the Reminders tools: it writes the same private records the Notes app does.
-Deliberately write-only: no tool here reads the contents of existing notes.
+Reading is limited on purpose: titles and folders can be listed, and one unlocked note can be
+read by id. Nothing searches note bodies, and note text is never written to the activity log.
 
 A note's text is stored as a gzipped protobuf holding the text, a small CRDT structure
 (three "substring" records plus a version vector) and formatting runs. The library's schema
@@ -296,6 +297,18 @@ def undo_op(op: dict) -> str:
     raise ValueError(f"Unknown note undo op '{kind}'")
 
 
+def _read(svc, note_id: str) -> dict:
+    rec = _lookup(svc, note_id)
+    if "passwordprotected" in str(rec.get("recordType", "")).lower():
+        raise ValueError("That note is locked and can't be read")
+    fields = rec["fields"]
+    if "TextDataEncrypted" not in fields:
+        raise ValueError("That note has no readable text")
+    note = note_from_text_data(fields["TextDataEncrypted"]["value"])
+    text = next((v for fn, _, v in _fields(note) if fn == 2), b"").decode("utf-8")
+    return {"id": note_id, "text": text, "characters": len(text)}
+
+
 # ---- MCP tools ------------------------------------------------------------------------
 
 
@@ -305,7 +318,7 @@ def register(mcp):
     def create_note(text: str, folder: str = "") -> dict:
         """Create an Apple Note. The first line becomes the title (shown in title style), the
         rest is the body. folder: a folder name or id; empty means the default "Notes" folder.
-        Plain text only. Write-only: this server never reads existing notes."""
+        Plain text only."""
         text = text.replace("\r\n", "\n").replace("\r", "\n").strip("\n")
         if not text.strip():
             raise ValueError("The note is empty")
@@ -343,3 +356,31 @@ def register(mcp):
         out["log_id"] = activity.record("delete_note", "Moved a note to Recently Deleted",
                                         undo={"op": "restore_note", "id": id, "folder_id": info["from"]})
         return out
+
+    @mcp.tool()
+    @reminders._reset_on_error
+    def list_note_folders() -> list:
+        """List the Notes folders (id, name). Includes Recently Deleted."""
+        return [{"id": f.id, "name": f.name} for f in _notes().folders()]
+
+    @mcp.tool()
+    @reminders._reset_on_error
+    def list_notes(folder: str = "", limit: int = 20) -> list:
+        """List the newest notes in a folder (name or id; empty is the default Notes folder):
+        id, title, modified, locked. Titles only; use read_note for the text."""
+        svc = _notes()
+        folder_id, _ = _folder(svc, folder)
+        limit = max(1, min(int(limit), 100))
+        out = []
+        for s in svc.in_folder(folder_id, limit=limit):
+            out.append({"id": s.id, "title": s.title or "", "folder": s.folder_name,
+                        "modified": s.modified_at.isoformat() if s.modified_at else None,
+                        "locked": bool(s.is_locked)})
+        return out
+
+    @mcp.tool()
+    @reminders._reset_on_error
+    def read_note(id: str) -> dict:
+        """Read the plain text of one note by id. Locked notes are refused. Formatting,
+        checklists and attachments are not included."""
+        return _read(_notes(), id)

@@ -166,3 +166,45 @@ def test_undo_ops(monkeypatch):
     with pytest.raises(ValueError, match="Unknown"):
         N.undo_op({"op": "nope"})
     assert N.UNDO_OPS == {"trash_note", "restore_note"}
+
+
+# ---- read tools -----------------------------------------------------------------------
+def _rec(text, record_type="Note"):
+    return {"recordType": record_type,
+            "fields": {"TextDataEncrypted": {"value": N.wrap_note(N.build_note(text, APP_REPLICA, runs=[]))}}}
+
+
+def test_read_note_returns_the_text_including_multibyte(tools, monkeypatch):
+    monkeypatch.setattr(N, "_lookup", lambda svc, rid: _rec("Title\nمرحبا \U0001F600 body"))
+    out = tools.t["read_note"]("N1")
+    assert out["text"] == "Title\nمرحبا \U0001F600 body" and out["id"] == "N1"
+    assert tools.logged == []  # note text never reaches the activity log
+
+
+def test_read_note_refuses_locked_notes(tools, monkeypatch):
+    monkeypatch.setattr(N, "_lookup", lambda svc, rid: _rec("secret", "PasswordProtectedNote"))
+    with pytest.raises(ValueError, match="locked"):
+        tools.t["read_note"]("N1")
+
+
+def test_read_note_without_text_is_an_error(tools, monkeypatch):
+    monkeypatch.setattr(N, "_lookup", lambda svc, rid: {"recordType": "Note", "fields": {}})
+    with pytest.raises(ValueError, match="no readable text"):
+        tools.t["read_note"]("N1")
+
+
+def test_list_notes_gives_titles_only_and_clamps_limit(tools, monkeypatch):
+    seen = {}
+    summ = SimpleNamespace(id="A", title="T", snippet="BODY TEXT", folder_name="Work", modified_at=None, is_locked=False)
+    svc = SimpleNamespace(in_folder=lambda fid, limit: seen.update(fid=fid, limit=limit) or [summ])
+    monkeypatch.setattr(N, "_notes", lambda: svc)
+    out = tools.t["list_notes"]("Work", limit=9999)
+    assert seen == {"fid": "F-WORK", "limit": 100}
+    assert out == [{"id": "A", "title": "T", "folder": "Work", "modified": None, "locked": False}]
+    assert "BODY" not in str(out)
+
+
+def test_list_note_folders(tools, monkeypatch):
+    svc = SimpleNamespace(folders=lambda: [SimpleNamespace(id="F", name="Work", parent_id=None)])
+    monkeypatch.setattr(N, "_notes", lambda: svc)
+    assert tools.t["list_note_folders"]() == [{"id": "F", "name": "Work"}]

@@ -79,12 +79,12 @@ on); its method names below come from inspecting the installed version.
 
 ## 4. Notes (library: read-focused)
 
-The service exposes `folders`, `get`, `in_folder`, `iter_all`, `recents`,
+Create/move/delete are built (below), plus titles-only listing and `read_note`. The service exposes `folders`, `get`, `in_folder`, `iter_all`, `recents`,
 `export_note`, `render_note`, `download_attachment_to`, `stream_attachment`,
-`iter_changes`. There is no create/update call, so Notes is likely **read-only**.
+`iter_changes`. The library has no create/update call; ours writes the CloudKit records directly.
 
-- [ ] Read-only spike: list folders, list notes, read one. S, high (verify first)
-- [ ] Search notes by text; show recent notes. M, high
+- [x] List folders, list notes (titles), read one unlocked note by id (live-verified)
+- [ ] Search notes by text. M, high (scans bodies; deliberately not built)
 - [ ] Export a note to Markdown / HTML. S, med
 - [ ] Download a note's attachments. S, med
 - [x] Writing notes: `create_note`, `move_note`, `delete_note` (with undo), built from the app's own
@@ -184,7 +184,6 @@ Sensitive. Listed for completeness; recommended to skip or heavily restrict.
 - Reminders and Notes rely on private, unofficial iCloud APIs; Apple can change them.
 - The Reminders login session expires; re-login needs a 2FA code from you.
 - A single occurrence of a repeating event cannot be edited yet (section 2).
-- Reminder lists cannot be created or deleted through the library (section 1).
 
 ## Suggested order
 

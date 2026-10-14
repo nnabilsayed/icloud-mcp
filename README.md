@@ -116,10 +116,12 @@ time, the agent that did it, a plain summary and what's needed to undo it.
 
 ### Notes
 
-`create_note`, `move_note`, `delete_note`.
+`create_note`, `move_note`, `delete_note`, `list_note_folders`, `list_notes`, `read_note`.
 
-- **Write-only on purpose:** no tool reads the contents of existing notes. `create_note(text,
-  folder)` makes a note whose first line is the title; `delete_note` moves it to Recently Deleted
+- **Limited reading:** `list_note_folders()` and `list_notes(folder, limit)` give titles only;
+  `read_note(id)` returns the plain text of one note (formatting, checklists and attachments are
+  left out). Locked notes are refused, nothing searches note bodies, and note text is never
+  written to the activity log. `create_note(text, folder)` makes a note whose first line is the title; `delete_note` moves it to Recently Deleted
   (kept 30 days), and `undo` reverses a create, move or delete.
 - **One-time setup:** the first `create_note` learns your account's note author identity from a
   note the Notes app wrote; if you have none, create any note in the app first. It is cached in
