@@ -132,6 +132,22 @@ time, the agent that did it, a plain summary and what's needed to undo it.
 - **One-time setup:** the first `create_note` learns your account's note author identity from a
   note the Notes app wrote; if you have none, create any note in the app first. It is cached in
   `.notes_identity` (git-ignored).
+## Gmail (read-only, separate server)
+
+`gmail_server.py` is a second MCP server, kept apart from the iCloud one so its credentials and
+reach are separate. It reads Gmail over IMAP with an app password and cannot send, delete, move,
+label or mark mail read (the mailbox is opened read-only and bodies are fetched with `BODY.PEEK`).
+
+- `gmail_search(query, folder, limit, newer_than_days)`: Gmail search syntax such as
+  `from:hr@acme.com interview`; newest first, up to 50, with uid, from, subject and date.
+  Keywords must be plain ASCII.
+- `gmail_read(uid, folder, max_chars)`: one email as plain text (HTML is converted); attachments
+  are listed by name only. Tool descriptions tell the agent to treat email text as untrusted data.
+- Setup: turn on 2-Step Verification, create an app password at
+  myaccount.google.com/apppasswords, then set `GMAIL_ADDRESS` and `GMAIL_APP_PASSWORD`.
+  Register it like the iCloud server, with `gmail_server.py` as the script.
+- Pair it with `propose_event`: read a confirmation email, propose the event, confirm, create.
+
 ## Setup
 
 Requires Python 3.10+ and [uv](https://docs.astral.sh/uv/).
