@@ -20,6 +20,10 @@ Calendar: `list_calendars`, `list_events`, `create_event`, `update_event`,
 `delete_event`.
 `create_event` / `update_event` take `YYYY-MM-DD` for `start`/`end` to make an
 all-day event (`end` is the last day, inclusive; default is a one-day event).
+They also take `repeat` (`daily|weekly|monthly|yearly`, `none` to remove),
+`repeat_interval`, and either `repeat_count` or `repeat_until`; weekly also
+accepts `repeat_days` like `["MO","WE"]`. Editing or deleting a repeating event
+affects the whole series.
 
 Reminders: `list_reminder_lists`, `list_reminders`, `create_reminder`,
 `update_reminder`, `complete_reminder`, `delete_reminder`.

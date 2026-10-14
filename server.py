@@ -45,6 +45,58 @@ def _parse_when(value: str):
     return datetime.fromisoformat(value)
 
 
+_FREQS = {"daily": "DAILY", "weekly": "WEEKLY", "monthly": "MONTHLY", "yearly": "YEARLY"}
+_WEEKDAYS = ("MO", "TU", "WE", "TH", "FR", "SA", "SU")
+
+
+def _build_rrule(start, repeat: str, interval: int, count: int, until: str, days: list[str] | None) -> dict:
+    """Build an RRULE dict. repeat: daily|weekly|monthly|yearly. Stop with count OR until."""
+    key = repeat.strip().lower()
+    if key not in _FREQS:
+        raise ValueError(f"repeat must be one of {list(_FREQS)} or 'none', got '{repeat}'")
+    if interval < 1:
+        raise ValueError("repeat_interval must be at least 1")
+    if count and until:
+        raise ValueError("Use repeat_count or repeat_until, not both")
+    rule = {"freq": _FREQS[key], "interval": interval}
+    if days:
+        picked = [d.strip().upper()[:2] for d in days]
+        if key != "weekly" or any(d not in _WEEKDAYS for d in picked):
+            raise ValueError("repeat_days (MO,TU,WE,TH,FR,SA,SU) only works with repeat='weekly'")
+        rule["byday"] = picked
+    if count:
+        rule["count"] = count
+    elif until:
+        end_day = date.fromisoformat(until.strip())
+        if _is_all_day(start):
+            rule["until"] = end_day
+        elif start.tzinfo is not None:  # timed + zone-aware: UNTIL must be UTC
+            rule["until"] = datetime(end_day.year, end_day.month, end_day.day, 23, 59, 59, tzinfo=start.tzinfo).astimezone(timezone.utc)
+        else:  # floating time: UNTIL must be floating too
+            rule["until"] = datetime(end_day.year, end_day.month, end_day.day, 23, 59, 59)
+    return rule
+
+
+def _describe_rrule(comp):
+    rule = comp.get("rrule")
+    if not rule:
+        return None
+
+    def vals(key):  # parsed rules hold lists, freshly built ones hold scalars
+        v = rule.get(key)
+        return [] if v is None else (v if isinstance(v, list) else [v])
+
+    out = {"frequency": str(vals("FREQ")[0]).lower(), "interval": int(vals("INTERVAL")[0]) if vals("INTERVAL") else 1}
+    if vals("BYDAY"):
+        out["days"] = [str(d) for d in vals("BYDAY")]
+    if vals("COUNT"):
+        out["count"] = int(vals("COUNT")[0])
+    if vals("UNTIL"):
+        u = vals("UNTIL")[0]
+        out["until"] = (u.date() if isinstance(u, datetime) else u).isoformat()
+    return out
+
+
 def _summarize(ev) -> dict:
     comp = ev.icalendar_component
     start = comp.get("dtstart").dt if comp.get("dtstart") else None
@@ -58,6 +110,8 @@ def _summarize(ev) -> dict:
         "start": start.isoformat() if start else None,
         "end": end.isoformat() if end else (start.isoformat() if all_day and start else None),
         "all_day": all_day,
+        "repeat": _describe_rrule(comp),
+        "recurring": bool(comp.get("rrule") or comp.get("recurrence-id")),
         "location": str(comp.get("location", "")),
         "description": str(comp.get("description", "")),
     }
@@ -98,10 +152,19 @@ def create_event(
     end: str | None = None,
     location: str = "",
     description: str = "",
+    repeat: str = "",
+    repeat_interval: int = 1,
+    repeat_count: int = 0,
+    repeat_until: str = "",
+    repeat_days: list[str] | None = None,
 ) -> dict:
     """Create an event. start/end are ISO datetimes; end defaults to start + 1 hour.
     All-day: pass start as 'YYYY-MM-DD'. end is then the last day (inclusive, also
-    'YYYY-MM-DD') and defaults to the same day, e.g. start='2026-10-20' is a one-day event."""
+    'YYYY-MM-DD') and defaults to the same day, e.g. start='2026-10-20' is a one-day event.
+    Repeat: repeat='daily'|'weekly'|'monthly'|'yearly' (omit for none), every
+    repeat_interval units. It runs forever unless you give repeat_count (total
+    occurrences) or repeat_until ('YYYY-MM-DD', inclusive), not both. For weekly,
+    repeat_days like ['MO','WE'] picks weekdays (default: the start's weekday)."""
     s = _parse_when(start)
     if _is_all_day(s):
         last = _parse_when(end) if end else s
@@ -123,6 +186,8 @@ def create_event(
     ev.add("dtstart", s)
     ev.add("dtend", e)
     ev.add("dtstamp", datetime.now(timezone.utc))
+    if repeat:
+        ev.add("rrule", _build_rrule(s, repeat, repeat_interval, repeat_count, repeat_until, repeat_days))
     if location:
         ev.add("location", location)
     if description:
@@ -141,9 +206,17 @@ def update_event(
     end: str | None = None,
     location: str | None = None,
     description: str | None = None,
+    repeat: str | None = None,
+    repeat_interval: int = 1,
+    repeat_count: int = 0,
+    repeat_until: str = "",
+    repeat_days: list[str] | None = None,
 ) -> dict:
     """Update fields of an existing event by uid. Only provided fields change.
-    Use 'YYYY-MM-DD' for start/end to make it all-day (end = last day, inclusive)."""
+    Use 'YYYY-MM-DD' for start/end to make it all-day (end = last day, inclusive).
+    repeat: daily|weekly|monthly|yearly replaces the repeat rule (see create_event
+    for the other repeat_* options); 'none' removes it; omit to leave it alone.
+    On a repeating event this changes the whole series."""
     ev = _find(_calendar(calendar), uid)
     comp = ev.icalendar_component
     for key, val in (("summary", summary), ("location", location), ("description", description)):
@@ -172,13 +245,17 @@ def update_event(
         comp.add("dtstart", new_start)
         comp.pop("dtend", None)
         comp.add("dtend", new_end)
+    if repeat is not None:
+        comp.pop("rrule", None)
+        if repeat.strip().lower() not in ("", "none"):
+            comp.add("rrule", _build_rrule(comp["dtstart"].dt, repeat, repeat_interval, repeat_count, repeat_until, repeat_days))
     ev.save()
     return _summarize(ev)
 
 
 @mcp.tool()
 def delete_event(calendar: str, uid: str) -> str:
-    """Delete an event by uid."""
+    """Delete an event by uid. For a repeating event this deletes the whole series."""
     _find(_calendar(calendar), uid).delete()
     return f"Deleted {uid}"
 
