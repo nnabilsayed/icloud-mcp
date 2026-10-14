@@ -10,9 +10,12 @@ iPhone in the loop.
   [pyicloud](https://github.com/timlaing/pyicloud). It is unofficial. See
   [Caveats](#caveats).
 
-Reminders support goes beyond the basics: repeat, early reminders, tags and
-**Urgent** alarms. How those are stored is written up in
-[FINDINGS.md](FINDINGS.md).
+Both go beyond the basics:
+
+- **Calendar:** all-day and repeating events, alerts, and an `agenda` tool that
+  returns today's (or this week's) events and due reminders in one call.
+- **Reminders:** repeat, early reminders, tags and **Urgent** alarms. How those
+  are stored is written up in [FINDINGS.md](FINDINGS.md).
 
 ## Tools
 
