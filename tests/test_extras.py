@@ -179,3 +179,30 @@ def test_combined_and_invalid():
     assert titles(R._filter_reminders(ITEMS, True, "high")) == ["c"]
     with pytest.raises(ValueError, match="priority must be"):
         R._filter_reminders(ITEMS, None, "urgent")
+
+
+# ---- timed reminders must notify (a due time alone is silent) ------------
+def test_default_alarm_for_timed_due_unless_overridden():
+    assert R._default_alarms(None, True, True) == ["due"]
+    assert R._default_alarms(None, True, False) is None  # all-day or no due date: nothing to alarm
+    assert R._default_alarms(None, False, True) is None  # notify=False keeps it silent
+    assert R._default_alarms(["2026-10-19T18:00"], True, True) == ["2026-10-19T18:00"]  # explicit wins
+    assert R._default_alarms([], True, True) == []
+
+
+def test_alarms_after_due_change():
+    old = datetime(2026, 10, 20, 9, 0)
+    extra = datetime(2026, 10, 19, 18, 0)
+    # at-due alarm follows the new time, other alarms stay
+    assert R._alarms_after_due_change([old, extra], old, True, True) == ["2026-10-19T18:00", "due"]
+    # a legacy timed reminder with no alarm gains one
+    assert R._alarms_after_due_change([], old, True, True) == ["due"]
+    # newly timed (was all-day / none) gains one
+    assert R._alarms_after_due_change([], None, True, True) == ["due"]
+    # moved to all-day: the at-due alarm is dropped, others kept
+    assert R._alarms_after_due_change([old, extra], old, False, True) == ["2026-10-19T18:00"]
+    # nothing to do when there was no at-due alarm and none is wanted
+    assert R._alarms_after_due_change([extra], old, False, True) is None
+    assert R._alarms_after_due_change([extra], old, True, False) is None
+    # notify=False on a timed due drops the old at-due alarm without adding a new one
+    assert R._alarms_after_due_change([old], old, True, False) == []

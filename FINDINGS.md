@@ -151,3 +151,10 @@ Apple can also leave a reminder pointing at an alarm record that no longer exist
 (`NOT_FOUND`); `alarms_for` raises for such reminders, so alarms are read raw and
 dangling ids are skipped.
 
+**Verified on a phone (iOS 26):** an alarm record at the due time notifies at that time; an
+alarm at a different time notifies at its own time (and the app then shows that time in the
+reminder's Time field); a reminder with a due time but **no alarm record shows the time but
+never notifies**. A reminder made through the API with a due time therefore needs an
+alarm at that time, which this project now creates by default (`notify=False` opts out).
+The app has no separate setting for several time alarms: its Time field and the alarm are
+the same thing, so extra alarms behave as additional notifications only.

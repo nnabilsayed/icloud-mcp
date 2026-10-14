@@ -42,7 +42,9 @@ Reminders: `list_reminder_lists`, `list_reminders`, `create_reminder`,
 `create_reminder` / `update_reminder` also take `links` (URLs to attach; on update the
 complete set, `[]` removes all) and `alarms` (extra time alarms, each
 `YYYY-MM-DDTHH:MM` local or `due` for the due time; on update the complete set, `[]`
-removes them; location alarms are never touched). Reminder details report `links` and
+removes them; location alarms are never touched). A reminder created or moved to a due *time* gets an alarm at that
+time by default, because a due time with no alarm never notifies (`notify=False` keeps it
+silent). Reminder details report `links` and
 `alarms`. `list_reminders` has smart views: `flagged=True`, and
 `priority='high'|'medium'|'low'|'none'|'any'`, sorted most urgent first.
 

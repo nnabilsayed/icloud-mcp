@@ -602,6 +602,29 @@ def _apply_alarms(svc, r, alarms: list[str] | None) -> None:
             _add_date_alarm(svc, r, when)
 
 
+def _default_alarms(alarms: list[str] | None, notify: bool, timed_due: bool) -> list[str] | None:
+    """A reminder with a due TIME only notifies if it has an alarm (verified on a phone: a due
+    time alone stays silent). So a new timed reminder gets an alarm at its due time unless the
+    caller said otherwise."""
+    if alarms is not None:
+        return alarms
+    return ["due"] if notify and timed_due else None
+
+
+def _alarms_after_due_change(date_alarms: list[datetime], old_due: datetime | None,
+                             new_timed: bool, notify: bool) -> list[str] | None:
+    """Time alarms a reminder should have after its due time changed (None = nothing to do).
+    Alarms other than the one at the old due time are kept; the at-due alarm follows the new time."""
+    keep = [a.replace(second=0, microsecond=0) for a in date_alarms]
+    had_at_due = old_due is not None and old_due in keep
+    keep = [a for a in keep if a != old_due]
+    if new_timed and notify:
+        return [a.isoformat(timespec="minutes") for a in keep] + ["due"]
+    if had_at_due:
+        return [a.isoformat(timespec="minutes") for a in keep]
+    return None
+
+
 def _alarms_out(svc, r) -> list[dict]:
     due = _due_local(r)
     out = []
@@ -725,12 +748,16 @@ def register(mcp):
         urgent: bool = False,
         links: list[str] | None = None,
         alarms: list[str] | None = None,
+        notify: bool = True,
     ) -> dict:
         """Create a real Apple Reminder in a list (name or id).
         urgent: make it an Urgent alarm (needs a due date and time; turn-on only).
         links: URLs to attach, e.g. ['https://example.com/page'].
         alarms: extra time alarms, each 'YYYY-MM-DDTHH:MM' (local) or 'due' (at the due
         time, which needs a timed due date), e.g. ['due', '2026-10-20T08:00'].
+        notify: a reminder with a due TIME gets an alarm at that time, like the app does,
+        because without one it never notifies. Set notify=False for a silent due time.
+        Passing alarms yourself overrides this default.
         early_days / early_hours: also notify N days or hours before the due date
         (needs a due date; the app holds one early reminder, so use one of them).
         due: '' for none, 'YYYY-MM-DD' for all-day, or an ISO datetime (local time).
@@ -740,7 +767,9 @@ def register(mcp):
         Repeat needs a due date to be meaningful."""
         l = _list(list)
         dt, all_day = _parse_due(due)
-        _validate_extras(links, alarms, dt is not None and not all_day)
+        timed = dt is not None and not all_day
+        alarms = _default_alarms(alarms, notify, timed)
+        _validate_extras(links, alarms, timed)
         r = _service().create(
             list_id=l.id,
             title=title,
@@ -781,6 +810,7 @@ def register(mcp):
         early_hours: int | None = None,
         links: list[str] | None = None,
         alarms: list[str] | None = None,
+        notify: bool = True,
     ) -> dict:
         """Update a reminder by id. Only provided fields change. due='' clears it.
         early_days / early_hours: notify N days or hours before due; 0 clears it.
@@ -788,8 +818,9 @@ def register(mcp):
         tags: the complete desired tag set (replaces existing); [] removes all.
         links: the complete set of attached URLs (replaces existing); [] removes all.
         alarms: the complete set of time alarms ('YYYY-MM-DDTHH:MM' local, or 'due');
-        replaces existing time alarms, [] removes them, omit to keep. Changing the due
-        time also moves an alarm that sat at the old due time.
+        replaces existing time alarms, [] removes them, omit to keep. When you change the
+        due to a time, the alarm at the due time follows it (and is added if missing, so the
+        reminder notifies; notify=False keeps it silent).
         Location alarms are never touched."""
         svc = _service()
         r = svc.get(id)
@@ -809,15 +840,11 @@ def register(mcp):
         moved_alarms = None
         if due is not None:
             old_due = _due_local(r)
-            was_at_due = old_due is not None and any(
-                a["kind"] == "date" and a["at"].replace(second=0, microsecond=0) == old_due for a in _read_alarms(svc, r)
-            )
+            old_date_alarms = [a["at"] for a in _read_alarms(svc, r) if a["kind"] == "date"]
             r.due_date, r.all_day = _parse_due(due)
             r.time_zone = None if r.all_day else get_localzone_name()
-            if was_at_due:
-                keep = [a["at"].replace(second=0, microsecond=0) for a in _read_alarms(svc, r)
-                        if a["kind"] == "date" and a["at"].replace(second=0, microsecond=0) != old_due]
-                moved_alarms = [t.isoformat(timespec="minutes") for t in keep] + (["due"] if not r.all_day and r.due_date else [])
+            if alarms is None:
+                moved_alarms = _alarms_after_due_change(old_date_alarms, old_due, bool(r.due_date) and not r.all_day, notify)
         svc.update(r)
         _apply_repeat(svc, svc.get(id), repeat, repeat_interval, repeat_count)
         _apply_tags(svc, svc.get(id), tags)
