@@ -22,6 +22,14 @@ class FakeEvent:
         return self.comp
 
     @property
+    def url(self) -> str:
+        return f"{self.cal.url}{self.comp['uid']}.ics"
+
+    @property
+    def client(self):
+        return self.cal.client
+
+    @property
     def data(self) -> str:
         wrapper = Calendar()
         wrapper.add("prodid", "-//test//EN")
@@ -45,6 +53,8 @@ class FakeCalendar:
 
     def __init__(self, name="Home"):
         self.name = name
+        self.url = f"http://fake/{name.lower()}/"
+        self.client = None
         self.items: list[FakeEvent] = []
         self.fail_after_save = 0  # raise a network error this many times after saving
 

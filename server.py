@@ -3,6 +3,7 @@ ICLOUD_USERNAME  - Apple ID email
 ICLOUD_APP_PASSWORD - app-specific password (appleid.apple.com)
 """
 import functools
+import xml.etree.ElementTree as ET
 import os
 import time
 import uuid
@@ -182,6 +183,77 @@ def _search_range(cal, a: datetime, b: datetime) -> list:
     return found
 
 
+_STATUSES = ("TENTATIVE", "CONFIRMED", "CANCELLED")
+
+
+def _categories_of(comp) -> list[str]:
+    cats = comp.get("categories")
+    if cats is None:
+        return []
+    out = []
+    for c in (cats if isinstance(cats, list) else [cats]):
+        out += [str(x) for x in getattr(c, "cats", [c])]
+    return out
+
+
+def _set_extras(comp, url, categories, status, priority) -> None:
+    """URL, categories, status and priority. None = leave alone; '' / [] / 0 clears. Everything is
+    checked before it is written."""
+    if url is not None and url.strip() and "://" not in url and not url.strip().lower().startswith(("mailto:", "tel:")):
+        raise ValueError(f"url '{url}' doesn't look like a link (include http:// or https://)")
+    if status is not None and status.strip() and status.strip().upper() not in _STATUSES:
+        raise ValueError(f"status must be one of {list(_STATUSES)} (or '' to clear), got '{status}'")
+    if priority is not None and not 0 <= priority <= 9:
+        raise ValueError("priority must be 0 (none) to 9; 1 is the highest")
+    if url is not None:
+        comp.pop("url", None)
+        if url.strip():
+            comp.add("url", url.strip())
+    if categories is not None:
+        comp.pop("categories", None)
+        cleaned = [c.strip() for c in categories if c.strip()]
+        if cleaned:
+            comp.add("categories", cleaned)
+    if status is not None:
+        comp.pop("status", None)
+        if status.strip():
+            comp.add("status", status.strip().upper())
+    if priority is not None:
+        comp.pop("priority", None)
+        if priority:
+            comp.add("priority", priority)
+
+
+def _apply_times(comp, start: str | None, end: str | None) -> None:
+    """Change an event's start and/or end. Moving the start alone keeps the event's length."""
+    if start is None and end is None:
+        return
+    cur_start = comp.get("dtstart").dt
+    cur_end = comp.get("dtend").dt if comp.get("dtend") else None
+    new_start = _parse_when(start) if start is not None else cur_start
+    if end is not None:
+        new_end = _parse_when(end)
+        if _is_all_day(new_start):
+            if not _is_all_day(new_end):
+                raise ValueError("An all-day event needs end as 'YYYY-MM-DD'")
+            new_end = new_end + timedelta(days=1)  # inclusive last day -> exclusive DTEND
+    elif _is_all_day(new_start) == _is_all_day(cur_start) and cur_end is not None:
+        try:
+            new_end = new_start + (cur_end - cur_start)  # moving an event keeps its length
+        except TypeError:  # one side is zone-aware and the other isn't
+            new_end = cur_end
+    elif _is_all_day(new_start):
+        new_end = new_start + timedelta(days=1)  # became all-day: one day
+    else:
+        new_end = new_start + timedelta(hours=1)  # became timed: one hour
+    if _is_all_day(new_end) != _is_all_day(new_start):
+        raise ValueError("start and end must both be dates or both be datetimes")
+    comp.pop("dtstart", None)
+    comp.add("dtstart", new_start)
+    comp.pop("dtend", None)
+    comp.add("dtend", new_end)
+
+
 def _summarize(ev) -> dict:
     comp = ev.icalendar_component
     start = comp.get("dtstart").dt if comp.get("dtstart") else None
@@ -197,6 +269,10 @@ def _summarize(ev) -> dict:
         "all_day": all_day,
         "repeat": _describe_rrule(comp),
         "alerts": _alert_minutes(comp),
+        "url": str(comp.get("url", "")),
+        "categories": _categories_of(comp),
+        "status": str(comp.get("status", "")),
+        "priority": int(comp.get("priority", 0) or 0),
         "recurring": bool(comp.get("rrule") or comp.get("recurrence-id")),
         "location": str(comp.get("location", "")),
         "description": str(comp.get("description", "")),
@@ -266,6 +342,10 @@ def create_event(
     repeat_days: list[str] | None = None,
     alerts: list[int] | None = None,
     warn_conflicts: bool = True,
+    url: str = "",
+    categories: list[str] | None = None,
+    status: str = "",
+    priority: int = 0,
 ) -> dict:
     """Create an event. start/end are ISO datetimes; end defaults to start + 1 hour.
     All-day: pass start as 'YYYY-MM-DD'. end is then the last day (inclusive, also
@@ -277,7 +357,9 @@ def create_event(
     alerts: notify N minutes before the start, e.g. [30, 1440] = 30 minutes and 1 day
     before. For all-day events the start is midnight, so 900 = 9:00 the day before.
     warn_conflicts: a timed event is still created, but the result lists any events it
-    overlaps under 'conflicts' (None if the check could not run)."""
+    overlaps under 'conflicts' (None if the check could not run).
+    url: a link for the event. categories: tags like ['work', 'travel']. status: TENTATIVE,
+    CONFIRMED or CANCELLED. priority: 1 (highest) to 9, or 0 for none."""
     s = _parse_when(start)
     if _is_all_day(s):
         last = _parse_when(end) if end else s
@@ -308,6 +390,7 @@ def create_event(
         ev.add("location", location)
     if description:
         ev.add("description", description)
+    _set_extras(ev, url or None, categories, status or None, priority or None)
     cal.add_component(ev)
     target = _calendar(calendar)
     conflicts = None
@@ -348,6 +431,10 @@ def update_event(
     repeat_until: str = "",
     repeat_days: list[str] | None = None,
     alerts: list[int] | None = None,
+    url: str | None = None,
+    categories: list[str] | None = None,
+    status: str | None = None,
+    priority: int | None = None,
 ) -> dict:
     """Update fields of an existing event by uid. Only provided fields change.
     Use 'YYYY-MM-DD' for start/end to make it all-day (end = last day, inclusive).
@@ -355,6 +442,7 @@ def update_event(
     for the other repeat_* options); 'none' removes it; omit to leave it alone.
     alerts: the complete list of alerts in minutes before start (replaces existing);
     [] removes all; omit to leave them alone.
+    url / categories / status / priority: '' / [] / 0 clears; omit to leave alone.
     On a repeating event this changes the whole series."""
     ev = _find(_calendar(calendar), uid)
     before = ev.data  # the whole event as it is now, so the change can be undone
@@ -363,41 +451,20 @@ def update_event(
         if val is not None:
             comp.pop(key, None)
             comp.add(key, val)
-    if start is not None or end is not None:
-        cur_start = comp.get("dtstart").dt
-        cur_end = comp.get("dtend").dt if comp.get("dtend") else None
-        new_start = _parse_when(start) if start is not None else cur_start
-        if end is not None:
-            new_end = _parse_when(end)
-            if _is_all_day(new_start):
-                if not _is_all_day(new_end):
-                    raise ValueError("An all-day event needs end as 'YYYY-MM-DD'")
-                new_end = new_end + timedelta(days=1)  # inclusive last day -> exclusive DTEND
-        elif _is_all_day(new_start) == _is_all_day(cur_start) and cur_end is not None:
-            try:
-                new_end = new_start + (cur_end - cur_start)  # moving an event keeps its length
-            except TypeError:  # one side is zone-aware and the other isn't
-                new_end = cur_end
-        elif _is_all_day(new_start):
-            new_end = new_start + timedelta(days=1)  # became all-day: one day
-        else:
-            new_end = new_start + timedelta(hours=1)  # became timed: one hour
-        if _is_all_day(new_end) != _is_all_day(new_start):
-            raise ValueError("start and end must both be dates or both be datetimes")
-        comp.pop("dtstart", None)
-        comp.add("dtstart", new_start)
-        comp.pop("dtend", None)
-        comp.add("dtend", new_end)
+    _apply_times(comp, start, end)
     if repeat is not None:
         comp.pop("rrule", None)
         if repeat.strip().lower() not in ("", "none"):
             comp.add("rrule", _build_rrule(comp["dtstart"].dt, repeat, repeat_interval, repeat_count, repeat_until, repeat_days))
     if alerts is not None:
         _set_alerts(comp, alerts)
+    _set_extras(comp, url, categories, status, priority)
     ev.save()
     out = _summarize(ev)
     changed = [n for n, v in (("title", summary), ("start", start), ("end", end), ("location", location),
-                              ("description", description), ("repeat", repeat), ("alerts", alerts)) if v is not None]
+                              ("description", description), ("repeat", repeat), ("alerts", alerts),
+                              ("url", url), ("categories", categories), ("status", status),
+                              ("priority", priority)) if v is not None]
     out["log_id"] = activity.record(
         "update_event", f"Updated event '{out['summary']}' in {calendar}: {', '.join(changed) or 'no fields'}",
         undo={"op": "restore_event", "calendar": calendar, "uid": uid, "ical": before})
@@ -423,7 +490,18 @@ reminders.register(mcp)
 
 
 def _event_text(comp) -> str:
-    return " ".join(str(comp.get(k, "")) for k in ("summary", "description", "location")).lower()
+    return " ".join([str(comp.get(k, "")) for k in ("summary", "description", "location")] + _categories_of(comp)).lower()
+
+
+def _locate_event(uid: str, calendar: str = ""):
+    """(calendar, event) for a uid, in the named calendar or in any of them."""
+    cals = [_calendar(calendar)] if calendar else _event_calendar_list()
+    for cal in cals:
+        try:
+            return cal, _find(cal, uid)
+        except ValueError:
+            continue
+    raise ValueError(f"Event {uid} not found" + (f" in '{calendar}'" if calendar else " in any calendar"))
 
 
 @mcp.tool()
@@ -432,13 +510,8 @@ def get_event(uid: str, calendar: str = "") -> dict:
     """One event's full details by its uid (the id every event tool returns). calendar is optional:
     leave it out to look in all calendars. Returns the same fields as list_events plus its
     calendar, repeat rule and alerts."""
-    cals = [_calendar(calendar)] if calendar else _event_calendar_list()
-    for cal in cals:
-        try:
-            return {"calendar": cal.name, **_summarize(_find(cal, uid))}
-        except ValueError:
-            continue
-    raise ValueError(f"Event {uid} not found" + (f" in '{calendar}'" if calendar else " in any calendar"))
+    cal, ev = _locate_event(uid, calendar)
+    return {"calendar": cal.name, **_summarize(ev)}
 
 
 @mcp.tool()
@@ -489,6 +562,173 @@ def search_events(
     rows = [{"calendar": cal.name, **_summarize(e)} for cal, e in hits]
     rows.sort(key=lambda r: (r["start"] or "", r["summary"]))
     return {"count": len(rows), "events": rows[:limit]}
+
+
+def _move_event_impl(uid: str, src_name: str, dst_name: str) -> str:
+    """Move an event with WebDAV MOVE, which is atomic and keeps its uid. (Copying it and deleting
+    the original cannot work: iCloud refuses to hold one uid in two calendars, even briefly.)
+    A retry after a lost reply is harmless: if the event is already in the target, it is done."""
+    src, dst = _calendar(src_name), _calendar(dst_name)
+    if src is dst:
+        raise ValueError(f"The event is already in '{dst_name}'")
+    try:
+        ev = _find(src, uid)
+    except ValueError:
+        try:
+            return str(_find(dst, uid).icalendar_component.get("summary", ""))  # an earlier attempt moved it
+        except ValueError:
+            raise ValueError(f"Event {uid} not found in '{src_name}'")
+    title = str(ev.icalendar_component.get("summary", ""))
+    src_url = str(ev.url)
+    target_url = str(dst.url).rstrip("/") + "/" + src_url.rstrip("/").split("/")[-1]
+    resp = ev.client.request(src_url, "MOVE", "", {"Destination": target_url, "Overwrite": "F"})
+    if resp.status not in (200, 201, 204):
+        raise RuntimeError(f"iCloud refused to move the event (HTTP {resp.status})")
+    return title
+
+
+@mcp.tool()
+@_retry
+def move_event(uid: str, to_calendar: str, calendar: str = "") -> dict:
+    """Move an event to another calendar (same uid, same details). calendar is optional: leave it out
+    to find the event in any calendar. A repeating event moves with its whole series. Can be undone."""
+    src, ev = _locate_event(uid, calendar)
+    dst = _calendar(to_calendar)
+    src_name, dst_name = src.name, dst.name
+    title = _move_event_impl(uid, src_name, dst_name)
+    out = {"uid": uid, "title": title, "from": src_name, "to": dst_name}
+    out["log_id"] = activity.record("move_event", f"Moved event '{title}' from {src_name} to {dst_name}",
+                                    undo={"op": "move_event", "uid": uid, "from": dst_name, "to": src_name})
+    return out
+
+
+@mcp.tool()
+@_retry
+def duplicate_event(uid: str, calendar: str = "", to_calendar: str = "", start: str = "", end: str = "",
+                    title: str = "") -> dict:
+    """Copy an event under a new uid. calendar: where to find it (default: any). to_calendar: where
+    the copy goes (default: the same calendar). start / end: when the copy happens (same formats as
+    update_event; a new start alone keeps the event's length); default: the same time. title: a
+    different title for the copy. A repeating event is copied as a whole series. Can be undone."""
+    src, ev = _locate_event(uid, calendar)
+    dst = _calendar(to_calendar) if to_calendar else src
+    wrapper = Calendar.from_ical(ev.data)
+    masters = [c for c in wrapper.walk("VEVENT") if "RECURRENCE-ID" not in c]
+    if not masters:
+        raise ValueError("That event has no main entry to copy")
+    comp = masters[0]
+    new_uid = str(uuid.uuid4())
+    comp.pop("uid", None)
+    comp.add("uid", new_uid)
+    comp.pop("dtstamp", None)
+    comp.add("dtstamp", datetime.now(timezone.utc))
+    if title.strip():
+        comp.pop("summary", None)
+        comp.add("summary", title.strip())
+    _apply_times(comp, start or None, end or None)
+    out_cal = Calendar()
+    out_cal.add("prodid", "-//icloud-mcp//EN")
+    out_cal.add("version", "2.0")
+    for extra in wrapper.subcomponents:  # time zone definitions the copy may refer to
+        if extra.name != "VEVENT":
+            out_cal.add_component(extra)
+    out_cal.add_component(comp)
+    try:
+        created = dst.save_event(out_cal.to_ical().decode())
+    except _NETWORK_ERRORS as exc:
+        _reset_client()
+        try:
+            created = _find(_calendar(dst.name), new_uid)  # saved before the connection dropped
+        except ValueError:
+            created = None
+        if created is None:
+            raise exc  # not saved: let _retry send it again
+    result = {"calendar": dst.name, **_summarize(created)}
+    result["log_id"] = activity.record("duplicate_event", f"Duplicated event '{result['summary']}' into {dst.name}",
+                                       undo={"op": "delete_event", "calendar": dst.name, "uid": new_uid})
+    return result
+
+
+# --- Calendar settings ------------------------------------------------------------------
+_PROPFIND_BODY = ('''<?xml version="1.0" encoding="utf-8"?>
+<d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav" xmlns:a="http://apple.com/ns/ical/" xmlns:cs="http://calendarserver.org/ns/">
+ <d:prop><d:displayname/><d:resourcetype/><a:calendar-color/><c:supported-calendar-component-set/><d:current-user-privilege-set/><cs:source/></d:prop>
+</d:propfind>''')
+
+
+def _propfind_raw(cal) -> str:
+    r = cal.client.propfind(str(cal.url), _PROPFIND_BODY, 0)
+    raw = getattr(r, "raw", None) or getattr(r, "text", "")
+    return raw.decode("utf-8") if isinstance(raw, bytes) else raw
+
+
+def _parse_calendar_props(raw: str) -> dict:
+    """Colour, what it holds, whether it is writable and whether it is a subscription."""
+    local = lambda el: el.tag.split("}")[-1]
+    out = {"color": None, "components": [], "privileges": [], "resource_types": [], "source": None}
+    for el in ET.fromstring(raw).iter():
+        name = local(el)
+        if name == "calendar-color" and (el.text or "").strip():
+            out["color"] = el.text.strip()
+        elif name == "comp" and el.get("name"):
+            out["components"].append(el.get("name"))
+        elif name == "resourcetype":
+            out["resource_types"] = [local(c) for c in el]
+        elif name == "current-user-privilege-set":
+            out["privileges"] = [local(c) for priv in el for c in priv]
+        elif name == "source":
+            href = next((c.text for c in el.iter() if local(c) == "href" and c.text), None)
+            out["source"] = href or (el.text or "").strip() or None
+    return out
+
+
+def _describe_calendar(name: str, props: dict) -> dict:
+    kinds = {"VEVENT": "events", "VTODO": "reminders"}
+    kind = next((kinds[c] for c in props["components"] if c in kinds), "unknown")
+    return {
+        "name": name,
+        "color": props["color"],
+        "kind": kind if kind != "reminders" else "reminders (legacy list: not an event calendar)",
+        "writable": any(p in ("write", "write-content", "all") for p in props["privileges"]),
+        "subscribed": "subscribed" in props["resource_types"] or bool(props["source"]),
+        **({"source": props["source"]} if props["source"] else {}),
+    }
+
+
+@mcp.tool()
+@_retry
+def list_calendar_details() -> list[dict]:
+    """Every calendar with its colour, what it holds (events or the legacy reminders list), whether
+    you can write to it, and whether it is a read-only subscription (holidays, sports...). Over
+    CalDAV iCloud may not list subscriptions at all; if your account has none exposed, none appear."""
+    out = []
+    for cal in _principal().calendars():
+        try:
+            props = _parse_calendar_props(_propfind_raw(cal))
+        except Exception:
+            props = {"color": None, "components": [], "privileges": [], "resource_types": [], "source": None}
+        out.append(_describe_calendar(cal.name, props))
+    return out
+
+
+def _calendar_color(cal) -> str | None:
+    props = cal.get_properties([ical_elements.CalendarColor()])
+    return next((v for k, v in props.items() if k.endswith("calendar-color")), None)
+
+
+@mcp.tool()
+@_retry
+def set_calendar_color(calendar: str, color: str) -> dict:
+    """Change an event calendar's colour ('#RRGGBB'). Can be undone."""
+    cal = _calendar(calendar)
+    new = _normalize_color(color)
+    old = _calendar_color(cal)
+    cal.set_properties([ical_elements.CalendarColor(new)])
+    out = {"name": cal.name, "color": new, "previous": old}
+    out["log_id"] = activity.record(
+        "set_calendar_color", f"Changed the colour of '{cal.name}' from {old or 'none'} to {new}",
+        undo={"op": "set_calendar_color", "name": cal.name, "color": old} if old else None)
+    return out
 
 
 # --- Calendars: create, rename, delete ------------------------------------------------
@@ -612,6 +852,15 @@ def _undo_calendar_op(op: dict) -> str:
     if kind == "recreate_event":
         _calendar(op["calendar"]).save_event(op["ical"])
         return "recreated the deleted event"
+    if kind == "move_event":
+        _move_event_impl(op["uid"], op["from"], op["to"])
+        return f"moved the event back to '{op['to']}'"
+    if kind == "set_calendar_color":
+        cal = _find_calendar(op["name"])
+        if cal is None:
+            raise ValueError(f"Calendar '{op['name']}' no longer exists")
+        cal.set_properties([ical_elements.CalendarColor(op["color"])])
+        return f"restored the colour {op['color']}"
     if kind == "delete_calendar":
         cal = _find_calendar(op["name"])
         if cal is None:

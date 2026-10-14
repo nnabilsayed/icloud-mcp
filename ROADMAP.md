@@ -53,15 +53,15 @@ on); its method names below come from inspecting the installed version.
       EXDATE). M-L, low (standard iCalendar, fiddly)
 - [x] **Create, rename, delete calendars** (CalDAV `make_calendar`). S-M, med
 - [x] **Get one event by uid** (without scanning), and **search events by text**. S, low
-- [ ] **Event URL, notes and extra fields** (URL, categories, status, priority). S, low
+- [x] **Event URL, notes and extra fields** (URL, categories, status, priority). S, low
 - [ ] **Time zone support**: accept an explicit zone, default to yours, stop creating
       floating times. M, med (changes behavior, so test carefully)
 - [ ] **Travel time** / "time to leave" if iCloud stores it in a readable field. M, high
 - [ ] **Attendees and invites**: library has an `invites` module; sending from outside
       Apple's apps is unreliable. M-L, high
-- [ ] **Move an event between calendars**, **duplicate an event**. S, low
-- [ ] **Colors and calendar settings** (color, default alert). S, med
-- [ ] **Subscribed calendars** (holidays, sports) read-only listing. S, low
+- [x] **Move an event between calendars**, **duplicate an event**. S, low
+- [x] **Colors and calendar settings** (color, default alert). S, med
+- [x] **Subscribed calendars** (holidays, sports) read-only listing. S, low
 - [ ] **ICS import / export** of events. M, low
 - [x] **Free/busy**: when are you busy, ignoring titles (via `find_free_time`). S, low
 

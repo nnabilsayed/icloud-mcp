@@ -27,9 +27,36 @@ class AcctCalendar(FakeCalendar):
         return ["VEVENT"]
 
 
+class FakeClient:
+    """Just the WebDAV MOVE iCloud supports; a uid that already exists in the target is a 412."""
+
+    def __init__(self, acct):
+        self.acct = acct
+        self.requests = []
+
+    def request(self, url, method, body="", headers=None):
+        from types import SimpleNamespace
+
+        self.requests.append((method, url, headers))
+        assert method == "MOVE"
+        src_cal = next(c for c in self.acct.cals for e in c.items if e.url == url)
+        ev = next(e for e in src_cal.items if e.url == url)
+        dest = (headers or {})["Destination"]
+        dst_cal = next(c for c in self.acct.cals if dest.startswith(c.url))
+        if any(str(e.comp["uid"]) == str(ev.comp["uid"]) for e in dst_cal.items):
+            return SimpleNamespace(status=412)
+        src_cal.items.remove(ev)
+        ev.cal = dst_cal
+        dst_cal.items.append(ev)
+        return SimpleNamespace(status=201)
+
+
 class FakeAccount:
     def __init__(self, *names):
         self.cals = [AcctCalendar(self, n) for n in names]
+        self.client = FakeClient(self)
+        for c in self.cals:
+            c.client = self.client
         self.lose_reply = 0
 
     def calendars(self):
@@ -37,6 +64,7 @@ class FakeAccount:
 
     def make_calendar(self, name=None, supported_calendar_component_set=None):
         cal = AcctCalendar(self, name)
+        cal.client = self.client
         self.cals.append(cal)
         if self.lose_reply:
             self.lose_reply -= 1

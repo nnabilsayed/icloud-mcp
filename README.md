@@ -23,7 +23,8 @@ Both go beyond the basics:
 
 `list_calendars`, `list_events`, `create_event`, `update_event`, `delete_event`,
 `create_calendar`, `rename_calendar`, `delete_calendar`,
-`get_event`, `search_events`.
+`get_event`, `search_events`, `move_event`, `duplicate_event`,
+`list_calendar_details`, `set_calendar_color`.
 
 - **All-day events:** `start`/`end` as `YYYY-MM-DD` (`end` is the last day, inclusive; the
   default is a one-day event).
@@ -32,6 +33,15 @@ Both go beyond the basics:
   Editing or deleting a repeating event affects the whole series.
 - **Alerts:** `alerts` is a list of minutes before the start (`[30, 1440]` = 30 minutes and
   1 day before); on update it replaces the existing alerts and `[]` clears them.
+- **Extra fields:** `url`, `categories` (tags), `status` (`TENTATIVE`, `CONFIRMED`, `CANCELLED`) and
+  `priority` (1 highest to 9, 0 none) on `create_event` / `update_event` (`''` / `[]` / `0` clears).
+- **Move and copy:** `move_event(uid, to_calendar)` moves an event (and a repeating event's whole
+  series) with the same uid; `duplicate_event(uid, to_calendar, start, end, title)` copies it under a
+  new uid, optionally into another calendar or at a new time (a new `start` alone keeps its length).
+- **Calendar settings:** `list_calendar_details()` lists every calendar's colour, kind, whether it
+  is writable and whether it is a read-only subscription (iCloud may not expose subscriptions over
+  CalDAV at all); `set_calendar_color(calendar, color)` changes the colour. A calendar's default
+  alert can't be read or set over CalDAV (Apple keeps it as an app setting).
 - **Find events:** `get_event(uid, calendar)` returns one event's full details by id (the
   calendar is optional). `search_events(text, calendar, start, end, include_past, limit)` finds
   events by words in the title, notes or location without knowing the date; by default it skips

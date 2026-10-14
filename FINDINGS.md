@@ -210,3 +210,15 @@ iCloud's CalDAV server does not support searching by uid: the library's `get_eve
 sends a REPORT that iCloud answers with `412 Precondition Failed`. An event can instead be
 fetched from its own address, `<calendar url>/<uid>.ics`, which holds for events made by this
 project and (all 30 checked) by the Calendar app. A scan of the calendar is the fallback.
+
+## Moving events between calendars, and what CalDAV does not expose
+
+- **iCloud holds one uid in one calendar at a time.** Saving an event into a second calendar
+  while the original still exists answers `412 Precondition Failed`, so copy-then-delete cannot
+  work. WebDAV `MOVE` (source URL, `Destination` header, `Overwrite: F`) answers `201`, is atomic
+  and keeps the uid and every detail.
+- **URL, categories, status and priority** are stored and returned unchanged by iCloud.
+- **Calendar properties over CalDAV:** a PROPFIND returns the colour (`calendar-color`, as
+  `#RRGGBBAA`), the component set and the current user's privileges. For this account no calendar
+  carried a subscription marker (`subscribed` resource type or `source`): holiday, birthday and sports
+  subscriptions are not exposed over CalDAV. There is no property for a calendar's default alert.
