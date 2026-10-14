@@ -1,0 +1,88 @@
+# icloud-mcp
+
+An MCP server that lets AI agents (Claude Code, Codex, and other MCP clients)
+manage your iCloud **Calendar** and **Reminders** from Windows, with no Mac or
+iPhone in the loop.
+
+- **Calendar** uses CalDAV with an app-specific password. This is the
+  supported route.
+- **Reminders** uses iCloud's private CloudKit web API through
+  [pyicloud](https://github.com/timlaing/pyicloud). It is unofficial. See
+  [Caveats](#caveats).
+
+Reminders support goes beyond the basics: repeat, early reminders, tags and
+**Urgent** alarms. How those are stored is written up in
+[FINDINGS.md](FINDINGS.md).
+
+## Tools
+
+Calendar: `list_calendars`, `list_events`, `create_event`, `update_event`,
+`delete_event`.
+
+Reminders: `list_reminder_lists`, `list_reminders`, `create_reminder`,
+`update_reminder`, `complete_reminder`, `delete_reminder`.
+
+`create_reminder` / `update_reminder` accept: `due` (`YYYY-MM-DD` for all-day,
+or an ISO datetime in local time), `notes`, `priority`, `flagged`,
+`repeat` (`daily|weekly|monthly|yearly`, `repeat_interval`, `repeat_count`),
+`tags`, `early_hours` / `early_days`, and `urgent` (turn-on only).
+
+## Setup
+
+Requires Python 3.10+ and [uv](https://docs.astral.sh/uv/).
+
+1. **App-specific password** (Calendar): at appleid.apple.com go to
+   Sign-In and Security, App-Specific Passwords, and create one.
+2. **Environment variables:**
+   ```powershell
+   setx ICLOUD_USERNAME "you@icloud.com"
+   setx ICLOUD_APP_PASSWORD "xxxx-xxxx-xxxx-xxxx"
+   ```
+3. **Reminders sign-in (once):** run this in your own terminal. It asks for your
+   Apple ID password and a 2FA code, then caches a trusted session.
+   ```powershell
+   uv run python login.py
+   ```
+4. **Register with your client**, for example Claude Code:
+   ```
+   claude mcp add icloud -- uv run --directory "C:\path\to\icloud-mcp" python server.py
+   ```
+   Codex (`config.toml`):
+   ```toml
+   [mcp_servers.icloud]
+   command = "uv"
+   args = ["run", "--directory", "C:\\path\\to\\icloud-mcp", "python", "server.py"]
+   ```
+5. **One-time capture for early reminders and Urgent.** Apple does not expose
+   two per-account identifiers anywhere except inside records the app wrote.
+   Set an early reminder, and turn Urgent on, on any reminder in the Reminders
+   app, then run `uv run python capture.py <early-reminder-id> [<urgent-reminder-id>]`.
+   The ids are stored next to the code in `.account_id` and `.urgent_person_id`
+   (both git-ignored).
+
+## Caveats
+
+- **Unofficial and fragile.** Reminders uses the same private endpoints as
+  icloud.com. Apple can change them without notice, and this may stop working.
+- **It signs in with your real Apple ID password and 2FA code**, unlike
+  Calendar's revocable app-specific password. The cached session is a
+  credential: keep it private. Review the code, and the pyicloud dependency,
+  before trusting it with your account.
+- **Terms of service.** Automated access to private iCloud endpoints may not be
+  something Apple permits. Use at your own risk, on your own account.
+- **Urgent is confirmed working** on the author's iPhone: the reminder fires as
+  an Urgent alarm. Apple's checksum algorithm for the Urgent file is not
+  reverse-engineered; a SHA-512 of the file is accepted, so it works, but the
+  real algorithm is unknown. Only turning Urgent on is implemented.
+- **Advanced Data Protection** can block web access to iCloud data. This was not
+  tested with it on.
+- Written and tested against one account, so treat the details in
+  `FINDINGS.md` as observations.
+- Not affiliated with or endorsed by Apple.
+
+## License
+
+See `LICENSE`.
+
+
+

@@ -1,0 +1,10 @@
+[project]
+name = "icloud-mcp"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp[cli]<2",
+    "caldav",
+    "icalendar",
+    "pyicloud>=2026.10.0",
+]

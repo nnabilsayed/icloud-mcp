@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+*.pyc
+# per-account identifiers and anything session-like: never commit
+.account_id
+.urgent_person_id
+*.bin
+_*.json
