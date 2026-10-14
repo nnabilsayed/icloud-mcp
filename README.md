@@ -21,7 +21,8 @@ Both go beyond the basics:
 
 ### Calendar
 
-`list_calendars`, `list_events`, `create_event`, `update_event`, `delete_event`.
+`list_calendars`, `list_events`, `create_event`, `update_event`, `delete_event`,
+`create_calendar`, `rename_calendar`, `delete_calendar`.
 
 - **All-day events:** `start`/`end` as `YYYY-MM-DD` (`end` is the last day, inclusive; the
   default is a one-day event).
@@ -35,6 +36,11 @@ Both go beyond the basics:
   `warn_conflicts=False` skips the check).
 - Calls retry up to 3 times on dropped connections or DNS blips; a create never duplicates an
   event that was saved before the connection dropped.
+- **Calendars:** `create_calendar(name, color)` (names unique; optional `#RRGGBB`),
+  `rename_calendar(calendar, new_name)` and `delete_calendar(calendar, delete_events)`. A calendar
+  that still holds events is refused unless `delete_events=True` (up to 500 events, kept in the
+  log so undo can recreate the calendar and its events). Undoing a create only removes the
+  calendar if it is still empty.
 
 ### Reminders
 
@@ -79,7 +85,7 @@ Both go beyond the basics:
 ## Activity log and undo
 
 Every change made through this server (creating, editing, completing or deleting events,
-reminders and lists, including each item of a bulk operation) is written to a local log with the
+reminders, lists and calendars, including each item of a bulk operation) is written to a local log with the
 time, the agent that did it, a plain summary and what's needed to undo it.
 
 - `activity_log(limit, agent, tool, only_undoable)` shows it, newest first.

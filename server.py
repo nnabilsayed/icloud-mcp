@@ -11,6 +11,7 @@ from datetime import time as time_of_day
 
 import activity
 import caldav
+from caldav.elements import dav, ical as ical_elements
 import niquests
 from icalendar import Alarm, Calendar, Event
 from tzlocal import get_localzone
@@ -404,6 +405,114 @@ import reminders  # noqa: E402  (CloudKit-backed Reminders tools)
 reminders.register(mcp)
 
 
+# --- Calendars: create, rename, delete ------------------------------------------------
+MAX_UNDOABLE_EVENTS = 500  # deleting a calendar stores its events in the log so it can be undone
+
+
+def _check_calendar_name(name: str, cals, ignore=None) -> str:
+    n = name.strip()
+    if not n:
+        raise ValueError("A calendar needs a name")
+    if len(n) > 200:
+        raise ValueError("That calendar name is too long (200 characters at most)")
+    for c in cals:
+        if c is not ignore and (c.name or "").strip().lower() == n.lower():
+            raise ValueError(f"A calendar named '{c.name}' already exists; names must be unique so tools can tell them apart")
+    return n
+
+
+def _normalize_color(color: str) -> str:
+    """'#RRGGBB' or '#RRGGBBAA' -> '#RRGGBBAA' (what iCloud stores)."""
+    c = color.strip().upper()
+    if not c.startswith("#") or len(c) not in (7, 9) or any(ch not in "0123456789ABCDEF" for ch in c[1:]):
+        raise ValueError(f"color must look like '#RRGGBB', got '{color}'")
+    return c if len(c) == 9 else c + "FF"
+
+
+def _find_calendar(name: str):
+    for c in _event_calendar_list():
+        if (c.name or "").strip().lower() == name.strip().lower():
+            return c
+    return None
+
+
+def _make_calendar(name: str, color: str = ""):
+    """Create an event calendar; a lost reply is detected by looking the name up before retrying."""
+    try:
+        cal = _principal().make_calendar(name=name, supported_calendar_component_set=["VEVENT"])
+    except _NETWORK_ERRORS:
+        _reset_client()
+        found = _find_calendar(name)
+        if found is None:
+            raise
+        cal = found
+    if color:
+        cal.set_properties([ical_elements.CalendarColor(color)])
+    _reset_client_cache()
+    return cal
+
+
+def _reset_client_cache() -> None:
+    global _event_calendars
+    _event_calendars = None
+
+
+@mcp.tool()
+@_retry
+def create_calendar(name: str, color: str = "") -> dict:
+    """Create a new event calendar. Names must be unique. color: optional '#RRGGBB'. Returns its name;
+    use that as the `calendar` argument of the event tools. Can be undone."""
+    n = _check_calendar_name(name, _event_calendar_list())
+    c = _normalize_color(color) if color else ""
+    cal = _make_calendar(n, c)
+    out = {"name": n, "color": c or None}
+    out["log_id"] = activity.record("create_calendar", f"Created calendar '{n}'",
+                                    undo={"op": "delete_calendar", "name": n})
+    return out
+
+
+@mcp.tool()
+@_retry
+def rename_calendar(calendar: str, new_name: str) -> dict:
+    """Rename an event calendar. Names must be unique. Can be undone."""
+    cal = _calendar(calendar)
+    old = cal.name
+    n = _check_calendar_name(new_name, _event_calendar_list(), ignore=cal)
+    if n == old:
+        return {"name": n, "changed": False}
+    cal.set_properties([dav.DisplayName(n)])
+    _reset_client_cache()
+    out = {"name": n, "changed": True}
+    out["log_id"] = activity.record("rename_calendar", f"Renamed calendar '{old}' to '{n}'",
+                                    undo={"op": "rename_calendar", "name": n, "old": old})
+    return out
+
+
+@mcp.tool()
+@_retry
+def delete_calendar(calendar: str, delete_events: bool = False) -> dict:
+    """Delete an event calendar. One that still holds events is refused unless delete_events=True,
+    which deletes the events with it (up to 500, so the deletion can be undone: undo recreates the
+    calendar and its events)."""
+    cal = _calendar(calendar)
+    name = cal.name
+    events = cal.events()
+    if events and not delete_events:
+        raise ValueError(f"'{name}' still holds {len(events)} event(s). Move or delete them first, or pass "
+                         "delete_events=True to delete them with the calendar.")
+    if len(events) > MAX_UNDOABLE_EVENTS:
+        raise ValueError(f"'{name}' holds {len(events)} events, more than the {MAX_UNDOABLE_EVENTS} that can be "
+                         "kept for undo. Delete it in the Calendar app if you really mean to.")
+    saved = [e.data for e in events]
+    cal.delete()
+    _reset_client_cache()
+    out = {"name": name, "deleted_events": len(saved)}
+    out["log_id"] = activity.record(
+        "delete_calendar", f"Deleted calendar '{name}'" + (f" and its {len(saved)} event(s)" if saved else ""),
+        undo={"op": "recreate_calendar", "name": name, "events": saved})
+    return out
+
+
 def _undo_calendar_op(op: dict) -> str:
     kind = op["op"]
     if kind == "delete_event":
@@ -417,6 +526,29 @@ def _undo_calendar_op(op: dict) -> str:
     if kind == "recreate_event":
         _calendar(op["calendar"]).save_event(op["ical"])
         return "recreated the deleted event"
+    if kind == "delete_calendar":
+        cal = _find_calendar(op["name"])
+        if cal is None:
+            raise ValueError(f"Calendar '{op['name']}' no longer exists")
+        if cal.events():
+            raise ValueError(f"Calendar '{op['name']}' now holds events, so it isn't removed automatically")
+        cal.delete()
+        _reset_client_cache()
+        return "removed the calendar that was created"
+    if kind == "rename_calendar":
+        cal = _find_calendar(op["name"])
+        if cal is None:
+            raise ValueError(f"Calendar '{op['name']}' no longer exists")
+        _check_calendar_name(op["old"], _event_calendar_list(), ignore=cal)
+        cal.set_properties([dav.DisplayName(op["old"])])
+        _reset_client_cache()
+        return f"renamed the calendar back to '{op['old']}'"
+    if kind == "recreate_calendar":
+        _check_calendar_name(op["name"], _event_calendar_list())
+        cal = _make_calendar(op["name"])
+        for data in op["events"]:
+            cal.save_event(data)
+        return f"recreated the calendar with {len(op['events'])} event(s)"
     raise ValueError(f"Unknown undo operation '{kind}'")
 
 
