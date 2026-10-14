@@ -44,7 +44,20 @@ complete set, `[]` removes all) and `alarms` (extra time alarms, each
 `YYYY-MM-DDTHH:MM` local or `due` for the due time; on update the complete set, `[]`
 removes them; location alarms are never touched). A reminder created or moved to a due *time* gets an alarm at that
 time by default, because a due time with no alarm never notifies (`notify=False` keeps it
-silent). Reminder details report `links` and
+silent).
+
+More reminder tools:
+- `add_subtask(parent_id, title, ...)` nests a reminder under another (same list, one level
+  deep). Details report `subtasks` and each reminder has a `parent`. `update_reminder` can
+  re-parent with `parent=<id>` (`""` makes it top-level), and deleting a reminder deletes its
+  subtasks too.
+- `update_reminder(move_to=<list>)` moves a reminder (and its subtasks) to another list.
+- `bulk_reminders(action, ...)` changes many at once: `complete`, `uncomplete`, `flag`,
+  `unflag`, `move`, `reschedule` (`shift_days` or `new_due`), `set_priority`, `delete`. Pick
+  reminders with `ids` or filters (`list`, `flagged`, `priority`, `overdue`, `due_from`/`due_to`,
+  `title_contains`); at least one is required, max 50 per call. **It only previews unless you
+  pass `apply=True`.**
+- Repeat rules are edited in place (same record), not deleted and recreated. Reminder details report `links` and
 `alarms`. `list_reminders` has smart views: `flagged=True`, and
 `priority='high'|'medium'|'low'|'none'|'any'`, sorted most urgent first.
 

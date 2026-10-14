@@ -158,3 +158,18 @@ never notifies**. A reminder made through the API with a due time therefore need
 alarm at that time, which this project now creates by default (`notify=False` opts out).
 The app has no separate setting for several time alarms: its Time field and the alarm are
 the same thing, so extra alarms behave as additional notifications only.
+
+## Daily repeat, subtasks and moving between lists
+
+- **Daily repeat:** a rule created with `Frequency=0` in a single step shows as **Every Day**
+  on a phone. (An earlier create-as-1-then-patch-to-0 approach was the one that looked wrong
+  on a phone; rules are now created with the wire value directly and edited in place.)
+- **Subtask:** a reminder whose `ParentReminder` field references another reminder. The
+  app shows it indented under the parent, and the parent's Subtasks count follows. The
+  app nests one level.
+- **Move:** the library's `update()` doesn't write the list. Writing the `List` reference
+  plus a `ResolutionTokenMap` that keeps the existing entries and bumps `list` and
+  `lastModifiedDate` produces a record identical (same fields, same token-map keys) to one
+  the app writes when you move a reminder.
+- **`update()` and alarms:** `update()` rewrites the whole `ResolutionTokenMap`, including
+  the due-date token an alarm is tied to, so alarms are re-tied after every edit.

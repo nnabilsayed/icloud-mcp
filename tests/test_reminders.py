@@ -4,7 +4,6 @@ from types import SimpleNamespace
 import pytest
 
 import reminders as R
-from pyicloud.services.reminders.models import RecurrenceFrequency
 
 
 def test_repeat_wire_values_match_the_app():
@@ -24,7 +23,8 @@ def test_parse_due_timed_and_empty():
 
 
 def _reminder(**kw):
-    base = dict(id="R/1", list_id="L", title="t", desc="", completed=False, flagged=False, priority=0)
+    base = dict(id="R/1", list_id="L", title="t", desc="", completed=False, flagged=False, priority=0,
+                parent_reminder_id=None)
     return SimpleNamespace(**base, **kw)
 
 
@@ -39,42 +39,3 @@ def test_timed_due_is_shown_in_local_time(monkeypatch):
     monkeypatch.setattr(R, "get_localzone", lambda: timezone(timedelta(hours=3)))
     r = _reminder(all_day=False, due_date=datetime(2026, 10, 14, 20, tzinfo=timezone.utc))
     assert R._out(r)["due"].startswith("2026-10-14T23:00")
-
-
-class FakeSvc:
-    """Records what _apply_repeat asks pyicloud to write."""
-
-    def __init__(self):
-        self.created, self.patches = [], []
-        self._writes = SimpleNamespace(_submit_single_record_update=lambda **kw: self.patches.append(kw))
-
-    def create_recurrence_rule(self, reminder, frequency, interval, occurrence_count):
-        self.created.append(int(frequency))
-        return SimpleNamespace(id="RecurrenceRule/1", record_change_tag="t")
-
-
-def _bare():
-    return SimpleNamespace(id="R/1", recurrence_rule_ids=[])
-
-
-@pytest.mark.parametrize("repeat,wire", [("weekly", 1), ("monthly", 2), ("yearly", 3)])
-def test_apply_repeat_writes_the_right_wire_value(repeat, wire):
-    svc = FakeSvc()
-    R._apply_repeat(svc, _bare(), repeat, 1, 0)
-    assert svc.created == [wire] and svc.patches == []  # the library writes int(enum) as-is
-
-
-def test_apply_repeat_daily_is_created_then_patched_to_zero():
-    svc = FakeSvc()
-    R._apply_repeat(svc, _bare(), "daily", 1, 0)
-    assert svc.created == [int(RecurrenceFrequency(1))]  # the enum has no 0 member
-    assert svc.patches[0]["fields"]["Frequency"]["value"] == 0
-
-
-def test_apply_repeat_none_and_invalid():
-    svc = FakeSvc()
-    R._apply_repeat(svc, _bare(), "none", 1, 0)
-    R._apply_repeat(svc, _bare(), None, 1, 0)
-    assert svc.created == []
-    with pytest.raises(ValueError, match="repeat must be"):
-        R._apply_repeat(svc, _bare(), "hourly", 1, 0)

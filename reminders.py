@@ -10,8 +10,9 @@ import json
 import os
 import time
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 from pyicloud import PyiCloudService
 from tzlocal import get_localzone, get_localzone_name
@@ -90,6 +91,7 @@ def _out(r, list_title: str | None = None) -> dict:
         "id": r.id,
         "list": list_title,
         "list_id": r.list_id,
+        "parent": r.parent_reminder_id,
         "title": r.title,
         "notes": r.desc,
         "completed": r.completed,
@@ -300,44 +302,115 @@ def _read_rules(svc, r) -> list[dict]:
     return out
 
 
-def _apply_repeat(svc, r, repeat: str | None, interval: int, count: int) -> None:
-    """repeat: None = leave alone, ''/'none' = remove, else daily|weekly|monthly|yearly."""
+# --- Keep alarms tied to the current due date -----------------------------------
+def _sync_alarm_nonces(svc, r) -> None:
+    """svc.update() rewrites the whole ResolutionTokenMap, which leaves existing alarms pointing at
+    an older version of the due date. Re-tie them, as the app's own data always is."""
+    if not r.alarm_ids:
+        return
+    _ids, tm, _tag = _reminder_state(svc, r)
+    want = _due_nonce(tm)
+    for a in _read_alarms(svc, r):
+        rec = _lookup_record(svc, a["name"])
+        cur = rec["fields"].get("DueDateResolutionTokenAsNonce", {}).get("value") if rec else None
+        if cur is None or abs(cur - want) < 0.01:
+            continue
+        stub = SimpleNamespace(record_change_tag=None)
+        svc._writes._submit_single_record_update(
+            operation_name="Re-tie alarm to due date", record_name=a["name"], record_type="Alarm",
+            record_change_tag=a["tag"],
+            fields={"DueDateResolutionTokenAsNonce": {"type": "DOUBLE", "value": want}}, model_obj=stub)
+
+
+# --- Repeat rules: update in place, create with the wire value directly ----------
+def _delete_rule(svc, r, old: dict) -> None:
     from pyicloud.services.reminders.models import RecurrenceFrequency, RecurrenceRule
 
+    stub = RecurrenceRule(  # frequency is irrelevant for deletion; avoids enum issues
+        id=old["name"], reminder_id=r.id, frequency=RecurrenceFrequency.DAILY, record_change_tag=old["tag"])
+    svc.delete_recurrence_rule(r, stub)
+
+
+def _create_rule(svc, r, wire: int, interval: int, count: int) -> None:
+    """Create a rule with the exact wire frequency (the library's enum can't express daily = 0)."""
+    w = svc._writes
+    w._create_linked_child(
+        reminder=r, reminder_ids_attr="recurrence_rule_ids", prefix="RecurrenceRule",
+        record_type="RecurrenceRule", field_name="RecurrenceRuleIDs", token_field_name="recurrenceRuleIDs",
+        child_fields={
+            "Reminder": {"type": "REFERENCE", "value": {"recordName": w._reminder_record_name(r.id), "action": "VALIDATE"}},
+            "Frequency": {"type": "INT64", "value": wire},
+            "Interval": {"type": "INT64", "value": interval},
+            "OccurrenceCount": {"type": "INT64", "value": count},
+            "FirstDayOfTheWeek": {"type": "INT64", "value": 0},
+            "Imported": {"type": "INT64", "value": 0},
+            "Deleted": {"type": "INT64", "value": 0},
+        },
+        operation_name="Create recurrence rule")
+
+
+def _update_rule(svc, old: dict, wire: int, interval: int, count: int) -> bool:
+    """Change only what differs, on the existing rule record. Returns whether anything changed."""
+    fields = {}
+    if old["wire"] != wire:
+        fields["Frequency"] = {"type": "INT64", "value": wire}
+    if old["interval"] != interval:
+        fields["Interval"] = {"type": "INT64", "value": interval}
+    if (old["count"] or 0) != count:
+        fields["OccurrenceCount"] = {"type": "INT64", "value": count}
+    if not fields:
+        return False
+    svc._writes._submit_single_record_update(
+        operation_name="Update recurrence rule", record_name=old["name"], record_type="RecurrenceRule",
+        record_change_tag=old["tag"], fields=fields, model_obj=SimpleNamespace(record_change_tag=None))
+    return True
+
+
+def _apply_repeat(svc, r, repeat: str | None, interval: int, count: int) -> None:
+    """repeat: None = leave alone, ''/'none' = remove, else daily|weekly|monthly|yearly.
+    An existing rule is edited in place; a missing one is created with the wire value directly."""
     if repeat is None:
         return
     key = repeat.strip().lower()
     if key not in ("", "none") and key not in _FREQ:
         raise ValueError(f"repeat must be one of {list(_FREQ)} or 'none', got '{repeat}'")
-    for old in _read_rules(svc, r):
-        stub = RecurrenceRule(  # frequency is irrelevant for deletion; avoids enum issues
-            id=old["name"],
-            reminder_id=r.id,
-            frequency=RecurrenceFrequency.DAILY,
-            record_change_tag=old["tag"],
-        )
-        svc.delete_recurrence_rule(r, stub)
+    if key not in ("", "none"):
+        if interval < 1:
+            raise ValueError("repeat_interval must be at least 1")
+        if count < 0:
+            raise ValueError("repeat_count can't be negative")
+    old = _read_rules(svc, r)
     if key in ("", "none"):
+        for o in old:
+            _delete_rule(svc, r, o)
         return
     wire = _FREQ[key]
-    # The library writes int(enum) as-is, so enum value N lands on the wire as N.
-    # The enum has no 0, so daily is created as 1 and then patched to 0 below.
-    rule = svc.create_recurrence_rule(
-        r,
-        frequency=RecurrenceFrequency(max(wire, 1)),
-        interval=interval,
-        occurrence_count=count,
-    )
-    if wire == 0:
-        w = svc._writes
-        w._submit_single_record_update(
-            operation_name="Set daily recurrence",
-            record_name=rule.id,
-            record_type="RecurrenceRule",
-            record_change_tag=rule.record_change_tag,
-            fields={"Frequency": {"type": "INT64", "value": 0}},
-            model_obj=rule,
-        )
+    for extra in old[1:]:  # a reminder holds one rule; drop strays
+        _delete_rule(svc, r, extra)
+    if old:
+        _update_rule(svc, old[0], wire, interval, count)
+    else:
+        _create_rule(svc, r, wire, interval, count)
+
+
+# --- Moving between lists and subtasks --------------------------------------------
+def _move_reminder(svc, r, target) -> None:
+    """Point a reminder at another list (the library's update() doesn't write the list)."""
+    w = svc._writes
+    _ids, tm, tag = _reminder_state(svc, r)
+    list_id = target.id if target.id.startswith("List/") else f"List/{target.id}"
+    w._submit_single_record_update(
+        operation_name="Move reminder", record_name=w._reminder_record_name(r.id), record_type="Reminder",
+        record_change_tag=tag, model_obj=r, fields={
+            "List": {"type": "REFERENCE", "value": {"recordName": list_id, "action": "VALIDATE"}},
+            "ResolutionTokenMap": {"type": "STRING", "value": _merge_token_map(tm, ["list", "lastModifiedDate"])},
+            "LastModifiedDate": {"type": "TIMESTAMP", "value": int(time.time() * 1000)},
+        })
+
+
+def _subtasks_of(svc, r) -> list:
+    res = svc.list_reminders(r.list_id, include_completed=True)
+    return [x for x in res.reminders if not x.deleted and x.parent_reminder_id == r.id]
 
 
 def _apply_tags(svc, r, tags: list[str] | None) -> None:
@@ -658,6 +731,92 @@ def _filter_reminders(items: list[dict], flagged: bool | None, priority: str) ->
     return out
 
 
+# --- Bulk selection and planning (pure, testable) ----------------------------------
+def _titles_by_list(svc) -> dict:
+    return {l.id: l.title for l in svc.lists() if not l.deleted}
+
+
+def _select_reminders(svc, list_ident, include_completed, flagged, priority, overdue,
+                      due_from, due_to, title_contains) -> list[dict]:
+    lists = [_list(list_ident)] if list_ident else [l for l in svc.lists() if not l.deleted]
+    items = []
+    for l in lists:
+        res = svc.list_reminders(l.id, include_completed=include_completed)
+        items += [_out(r, l.title) for r in res.reminders if not r.deleted]
+    return _filter_bulk(items, flagged, priority, overdue, due_from, due_to, title_contains,
+                        include_completed, datetime.now().date().isoformat())
+
+
+def _filter_bulk(items, flagged, priority, overdue, due_from, due_to, title_contains,
+                 include_completed, today: str) -> list[dict]:
+    out = _filter_reminders(items, flagged, priority)
+    if not include_completed:
+        out = [r for r in out if not r["completed"]]
+    day = lambda r: r["due"][:10] if r["due"] else None
+    if overdue:
+        out = [r for r in out if day(r) and day(r) < today and not r["completed"]]
+    if due_from:
+        out = [r for r in out if day(r) and day(r) >= due_from.strip()]
+    if due_to:
+        out = [r for r in out if day(r) and day(r) <= due_to.strip()]
+    if title_contains:
+        needle = title_contains.strip().lower()
+        out = [r for r in out if needle in r["title"].lower()]
+    return out
+
+
+def _shift_due(due: str, days: int) -> str:
+    """Shift a due value as list_reminders reports it ('YYYY-MM-DD' or ISO with offset) by N days,
+    keeping the local wall-clock time; returns a value update_reminder accepts."""
+    if len(due) == 10:
+        return (date.fromisoformat(due) + timedelta(days=days)).isoformat()
+    dt = datetime.fromisoformat(due)
+    local = dt.astimezone(get_localzone()).replace(tzinfo=None) if dt.tzinfo else dt
+    return (local + timedelta(days=days)).isoformat(timespec="seconds")
+
+
+def _plan_bulk(act, chosen, target, shift_days, new_due, set_priority):
+    """Turn the selection into (plan, skipped): what would change, and what is left alone and why."""
+    plan, skipped = [], []
+    for r in chosen:
+        item = {"id": r["id"], "title": r["title"], "list": r["list"], "due": r["due"]}
+        why = None
+        if act == "complete":
+            why = "already completed" if r["completed"] else None
+            item["change"] = "mark complete"
+        elif act == "uncomplete":
+            why = None if r["completed"] else "not completed"
+            item["change"] = "mark incomplete"
+        elif act == "flag":
+            why = "already flagged" if r["flagged"] else None
+            item["change"] = "flag"
+        elif act == "unflag":
+            why = None if r["flagged"] else "not flagged"
+            item["change"] = "remove flag"
+        elif act == "move":
+            why = "already in that list" if r["list"] == target.title else None
+            item["change"] = f"move to {target.title}"
+        elif act == "set_priority":
+            value = _PRIORITY[set_priority.strip().lower()]
+            why = "already that priority" if r["priority"] == value else None
+            item["change"] = f"priority -> {set_priority.strip().lower()}"
+        elif act == "reschedule":
+            if new_due:
+                item["new_due"] = new_due
+            elif r["due"]:
+                item["new_due"] = _shift_due(r["due"], shift_days)
+            else:
+                why = "no due date to shift"
+            item["change"] = f"due -> {item.get('new_due')}"
+        elif act == "delete":
+            item["change"] = "DELETE"
+        if why:
+            skipped.append({"id": r["id"], "title": r["title"], "why": why})
+        else:
+            plan.append(item)
+    return plan, skipped
+
+
 def _detail(svc, rid: str, list_title: str | None = None) -> dict:
     """Fresh read of one reminder including repeat rule and tags."""
     r = svc.get(rid)
@@ -673,6 +832,7 @@ def _detail(svc, rid: str, list_title: str | None = None) -> dict:
     ]
     d["tags"] = [h.name for h in svc.tags_for(r)]
     d["links"] = _read_links(svc, r)
+    d["subtasks"] = [{"id": x.id, "title": x.title, "completed": x.completed} for x in _subtasks_of(svc, r)]
     d["alarms"] = _alarms_out(svc, r)
     alerts = (_read_alerts_blob(svc, rid) or {}).get("dueDateDeltaAlerts", [])
     for key, unit in (("early_hours", _UNIT_HOURS), ("early_days", _UNIT_DAYS)):
@@ -749,8 +909,11 @@ def register(mcp):
         links: list[str] | None = None,
         alarms: list[str] | None = None,
         notify: bool = True,
+        parent: str = "",
     ) -> dict:
         """Create a real Apple Reminder in a list (name or id).
+        parent: id of a reminder to nest this under as a subtask (same list, one level deep);
+        prefer the add_subtask tool.
         urgent: make it an Urgent alarm (needs a due date and time; turn-on only).
         links: URLs to attach, e.g. ['https://example.com/page'].
         alarms: extra time alarms, each 'YYYY-MM-DDTHH:MM' (local) or 'due' (at the due
@@ -770,8 +933,17 @@ def register(mcp):
         timed = dt is not None and not all_day
         alarms = _default_alarms(alarms, notify, timed)
         _validate_extras(links, alarms, timed)
+        parent_id = None
+        if parent:
+            pr = _service().get(parent)
+            if pr.list_id != l.id:
+                raise ValueError("A subtask must be in the same list as its parent")
+            if pr.parent_reminder_id:
+                raise ValueError("Subtasks can't have subtasks (the app nests one level)")
+            parent_id = pr.id
         r = _service().create(
             list_id=l.id,
+            parent_reminder_id=parent_id,
             title=title,
             desc=notes,
             due_date=dt,
@@ -811,8 +983,13 @@ def register(mcp):
         links: list[str] | None = None,
         alarms: list[str] | None = None,
         notify: bool = True,
+        move_to: str | None = None,
+        parent: str | None = None,
     ) -> dict:
         """Update a reminder by id. Only provided fields change. due='' clears it.
+        move_to: a list (name or id) to move it to, with its subtasks.
+        parent: id of a reminder to nest it under as a subtask (same list, one level deep);
+        '' makes it a top-level reminder again.
         early_days / early_hours: notify N days or hours before due; 0 clears it.
         repeat: daily|weekly|monthly|yearly, or 'none' to remove.
         tags: the complete desired tag set (replaces existing); [] removes all.
@@ -837,6 +1014,17 @@ def register(mcp):
             r.priority = priority
         if flagged is not None:
             r.flagged = flagged
+        if parent is not None:
+            if parent:
+                pr = svc.get(parent)
+                if pr.id == r.id or pr.list_id != r.list_id:
+                    raise ValueError("The parent must be a different reminder in the same list")
+                if pr.parent_reminder_id:
+                    raise ValueError("Subtasks can't have subtasks (the app nests one level)")
+                if _subtasks_of(svc, r):
+                    raise ValueError("This reminder has subtasks, so it can't become a subtask itself")
+            r.parent_reminder_id = svc.get(parent).id if parent else None
+        move_target = _list(move_to) if move_to else None
         moved_alarms = None
         if due is not None:
             old_due = _due_local(r)
@@ -857,6 +1045,12 @@ def register(mcp):
             _set_early(svc, id, early_hours, _UNIT_HOURS)
         elif early_days is not None:
             _set_early(svc, id, early_days, _UNIT_DAYS)
+        if move_target is not None and svc.get(id).list_id != move_target.id:
+            kids = _subtasks_of(svc, svc.get(id))
+            _move_reminder(svc, svc.get(id), move_target)
+            for kid in kids:
+                _move_reminder(svc, svc.get(kid.id), move_target)
+        _sync_alarm_nonces(svc, svc.get(id))
         return _detail(svc, id)
 
     @mcp.tool()
@@ -867,6 +1061,7 @@ def register(mcp):
         r = svc.get(id)
         r.completed = completed
         svc.update(r)
+        _sync_alarm_nonces(svc, svc.get(id))
         return _out(svc.get(id))
 
     @mcp.tool()
@@ -874,6 +1069,112 @@ def register(mcp):
     def delete_reminder(id: str) -> str:
         """Delete a reminder by id."""
         svc = _service()
+        r = svc.get(id)
+        for kid in _subtasks_of(svc, r):  # the app removes a reminder's subtasks with it
+            svc.delete(svc.get(kid.id))
         svc.delete(svc.get(id))
         return f"Deleted {id}"
 
+    _BULK_ACTIONS = ("complete", "uncomplete", "flag", "unflag", "move", "reschedule", "set_priority", "delete")
+
+    @mcp.tool()
+    @_reset_on_error
+    def add_subtask(
+        parent_id: str,
+        title: str,
+        due: str = "",
+        notes: str = "",
+        priority: int = 0,
+        flagged: bool = False,
+        notify: bool = True,
+    ) -> dict:
+        """Add a subtask under a reminder. It lives in the parent's list; the app nests one
+        level, so a subtask can't have subtasks. Takes the same due/notes/priority/flagged/
+        notify options as create_reminder. Returns the new subtask (its 'parent' is set)."""
+        svc = _service()
+        p = svc.get(parent_id)
+        return create_reminder(title=title, list=p.list_id, due=due, notes=notes, priority=priority,
+                               flagged=flagged, notify=notify, parent=p.id)
+
+    @mcp.tool()
+    @_reset_on_error
+    def bulk_reminders(
+        action: str,
+        ids: list[str] | None = None,
+        list: str = "",
+        flagged: bool | None = None,
+        priority: str = "",
+        overdue: bool = False,
+        due_from: str = "",
+        due_to: str = "",
+        title_contains: str = "",
+        include_completed: bool = False,
+        to_list: str = "",
+        shift_days: int = 0,
+        new_due: str = "",
+        set_priority: str = "",
+        apply: bool = False,
+    ) -> dict:
+        """Change many reminders at once. SAFE BY DEFAULT: with apply=False (the default) it only
+        previews what would change; call again with apply=True to do it.
+        action: complete | uncomplete | flag | unflag | move | reschedule | set_priority | delete.
+        Choose reminders with ids=[...] (exact), or with filters: list (name or id), flagged,
+        priority ('high'|'medium'|'low'|'none'|'any'), overdue=True, due_from / due_to
+        ('YYYY-MM-DD', inclusive), title_contains. At least one is required, and at most 50
+        reminders per call. Completed ones are skipped unless include_completed=True.
+        move needs to_list. reschedule needs exactly one of shift_days (+/- days, keeps the time)
+        or new_due ('YYYY-MM-DD' or ISO datetime). set_priority needs set_priority."""
+        act = action.strip().lower()
+        if act not in _BULK_ACTIONS:
+            raise ValueError(f"action must be one of {_BULK_ACTIONS}, got '{action}'")
+        if not (ids or list or flagged is not None or priority or overdue or due_from or due_to or title_contains):
+            raise ValueError("Say which reminders: ids, or a filter (list, flagged, priority, overdue, "
+                             "due_from/due_to, title_contains). Refusing to act on everything.")
+        if act == "move" and not to_list:
+            raise ValueError("move needs to_list")
+        if act == "reschedule" and bool(shift_days) == bool(new_due):
+            raise ValueError("reschedule needs exactly one of shift_days or new_due")
+        if act == "set_priority" and set_priority.strip().lower() not in _PRIORITY:
+            raise ValueError("set_priority must be high|medium|low|none")
+        svc = _service()
+        target = _list(to_list) if act == "move" else None
+        if ids:
+            names = {l.id: l.title for l in svc.lists()}
+            chosen = [_out(svc.get(i), None) for i in ids]
+            for c in chosen:
+                c["list"] = names.get(c["list_id"])
+        else:
+            chosen = _select_reminders(svc, list, include_completed, flagged, priority, overdue,
+                                       due_from, due_to, title_contains)
+        if len(chosen) > 50:
+            raise ValueError(f"{len(chosen)} reminders match; narrow it to 50 or fewer per call")
+        plan, skipped = _plan_bulk(act, chosen, target, shift_days, new_due, set_priority)
+        errors = []
+        if apply:
+            for item in plan:
+                try:
+                    rid = item["id"]
+                    if act == "complete":
+                        complete_reminder(rid, True)
+                    elif act == "uncomplete":
+                        complete_reminder(rid, False)
+                    elif act == "flag":
+                        update_reminder(id=rid, flagged=True)
+                    elif act == "unflag":
+                        update_reminder(id=rid, flagged=False)
+                    elif act == "move":
+                        update_reminder(id=rid, move_to=to_list)
+                    elif act == "reschedule":
+                        update_reminder(id=rid, due=item["new_due"])
+                    elif act == "set_priority":
+                        update_reminder(id=rid, priority=_PRIORITY[set_priority.strip().lower()])
+                    elif act == "delete":
+                        delete_reminder(rid)
+                except Exception as exc:
+                    errors.append({"id": item["id"], "title": item["title"], "error": f"{type(exc).__name__}: {exc}"[:200]})
+        out = {"action": act, "applied": bool(apply), "count": len(plan), "items": plan, "skipped": skipped}
+        if errors:
+            out["errors"] = errors
+        if not apply:
+            out["note"] = "Preview only. Call again with the same arguments plus apply=True to do it."
+        return out

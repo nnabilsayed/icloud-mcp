@@ -33,15 +33,15 @@ on); its method names below come from inspecting the installed version.
 - [x] **Timed alarms** separate from the due date (read `alarms_for`; creating them
       needed reverse-engineering the app's Alarm + AlarmTrigger records). M, med
 - [ ] **Rename or recolor a tag**: `update_hashtag`. S, low
-- [ ] **Edit an existing repeat rule in place** instead of delete + create:
+- [x] **Edit an existing repeat rule in place** instead of delete + create:
       `update_recurrence_rule`. S, low
 - [ ] **"What changed since X"** feed: `iter_changes` / `sync_cursor`. M, med
       (the basis for notifications and the activity log, section 11)
-- [ ] **Move a reminder to another list**. S-M, med (needs a live check)
+- [x] **Move a reminder to another list** (matches an app-made move record)
 - [ ] **Search reminders by text** across all lists. S, low (client-side filter)
-- [ ] **Subtasks**. M, high (no library call seen; would need reverse-engineering)
+- [x] **Subtasks** (the library's `create` takes a parent; verified on a phone)
 - [x] **Priority and flag smart views** ("everything flagged", "all high priority"). S, low
-- [ ] **Bulk operations**: complete / move / reschedule many at once, with a preview. M, low
+- [x] **Bulk operations**: complete / move / reschedule many at once, with a preview. M, low
 - [ ] **Create, rename, delete lists**. L, high. NOTE: the library has no call for
       this, so it would mean reverse-engineering CloudKit writes the way we did for
       Urgent. Do not promise it.
