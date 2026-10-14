@@ -18,6 +18,9 @@ Reminders support goes beyond the basics: repeat, early reminders, tags and
 
 Calendar: `list_calendars`, `list_events`, `create_event`, `update_event`,
 `delete_event`.
+
+Both: `agenda(start, days, include_overdue)` returns events from every calendar,
+reminders due in the range, and overdue reminders in one call (default: today).
 `create_event` / `update_event` take `YYYY-MM-DD` for `start`/`end` to make an
 all-day event (`end` is the last day, inclusive; default is a one-day event).
 They also take `repeat` (`daily|weekly|monthly|yearly`, `none` to remove),

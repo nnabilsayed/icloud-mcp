@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import caldav
 from icalendar import Alarm, Calendar, Event
+from tzlocal import get_localzone
 from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("icloud-calendar")
@@ -121,6 +122,30 @@ def _alert_minutes(comp) -> list[int]:
     return sorted(out, reverse=True)
 
 
+def _local_naive(v) -> datetime:
+    """A date/datetime as a naive local datetime, for comparing against a local window."""
+    if isinstance(v, datetime):
+        return v.astimezone(get_localzone()).replace(tzinfo=None) if v.tzinfo else v
+    return datetime(v.year, v.month, v.day)
+
+
+def _search_range(cal, a: datetime, b: datetime) -> list:
+    """Events overlapping the local window [a, b). The server matches floating (zone-less)
+    times in its own zone, so query one day wider each side and filter here."""
+    pad = timedelta(days=1)
+    found = []
+    for e in cal.search(start=a - pad, end=b + pad, event=True, expand=True):
+        comp = e.icalendar_component
+        st = comp.get("dtstart")
+        if st is None:
+            continue
+        start = _local_naive(st.dt)
+        end = _local_naive(comp.get("dtend").dt) if comp.get("dtend") else start
+        if start < b and (end > a or start >= a):
+            found.append(e)
+    return found
+
+
 def _summarize(ev) -> dict:
     comp = ev.icalendar_component
     start = comp.get("dtstart").dt if comp.get("dtstart") else None
@@ -159,13 +184,7 @@ def list_calendars() -> list[str]:
 def list_events(calendar: str, start: str, end: str) -> list[dict]:
     """List events in a calendar between ISO datetimes (or dates) start and end.
     All-day events are included and flagged with all_day=true."""
-    cal = _calendar(calendar)
-    found = cal.search(
-        start=datetime.fromisoformat(start),
-        end=datetime.fromisoformat(end),
-        event=True,
-        expand=True,
-    )
+    found = _search_range(_calendar(calendar), datetime.fromisoformat(start), datetime.fromisoformat(end))
     return [_summarize(e) for e in found]
 
 
@@ -298,6 +317,74 @@ def delete_event(calendar: str, uid: str) -> str:
 import reminders  # noqa: E402  (CloudKit-backed Reminders tools)
 
 reminders.register(mcp)
+
+
+_event_calendars: list | None = None
+
+
+def _event_calendar_list() -> list:
+    """Calendars that hold events (skips the legacy Reminders list); cached per process."""
+    global _event_calendars
+    if _event_calendars is None:
+        found = []
+        for cal in _principal().calendars():
+            try:
+                comps = cal.get_supported_components()
+            except Exception:
+                comps = ["VEVENT"]
+            if "VEVENT" in comps:
+                found.append(cal)
+        _event_calendars = found
+    return _event_calendars
+
+
+@mcp.tool()
+@reminders._reset_on_error
+def agenda(start: str = "", days: int = 1, include_overdue: bool = True) -> dict:
+    """What's on: events from ALL calendars plus due reminders, in one call.
+    start: 'YYYY-MM-DD' (default today); days: how many days from start (1 = just that
+    day, 7 = a week). Returns events sorted by start (with their calendar), reminders
+    due in the range, and overdue = incomplete reminders due before start (only when
+    start is today or earlier; set include_overdue=False to leave them out).
+    Reminders with no due date are not included."""
+    if days < 1 or days > 366:
+        raise ValueError("days must be between 1 and 366")
+    first = date.fromisoformat(start.strip()) if start.strip() else datetime.now().date()
+    last = first + timedelta(days=days - 1)
+    window = (datetime(first.year, first.month, first.day), datetime(last.year, last.month, last.day) + timedelta(days=1))
+
+    events, errors = [], []
+    for cal in _event_calendars if _event_calendars is not None else _event_calendar_list():
+        try:
+            for e in _search_range(cal, window[0], window[1]):
+                events.append({"calendar": cal.name, **_summarize(e)})
+        except Exception as exc:  # one broken calendar shouldn't hide the rest
+            errors.append(f"{cal.name}: {type(exc).__name__}")
+    events.sort(key=lambda e: (e["start"] or "", e["summary"]))
+
+    def due_day(r):  # local calendar day of a reminder's due value
+        return date.fromisoformat(r["due"][:10]) if r["due"] else None
+
+    due, overdue = [], []
+    for r in reminders.open_reminders():
+        d = due_day(r)
+        if d is None or r["completed"]:
+            continue
+        if first <= d <= last:
+            due.append(r)
+        elif d < first and include_overdue and first <= datetime.now().date():
+            overdue.append(r)
+    key = lambda r: (r["due"] or "", r["title"])
+    due.sort(key=key)
+    overdue.sort(key=key)
+    return {
+        "from": first.isoformat(),
+        "to": last.isoformat(),
+        "events": events,
+        "reminders": due,
+        "overdue": overdue,
+        **({"errors": errors} if errors else {}),
+    }
 
 
 if __name__ == "__main__":

@@ -380,6 +380,18 @@ def _detail(svc, rid: str, list_title: str | None = None) -> dict:
     return d
 
 
+def open_reminders() -> list[dict]:
+    """All incomplete reminders across every list (used by the agenda tool)."""
+    svc = _service()
+    out = []
+    for l in svc.lists():
+        if l.deleted:
+            continue
+        res = svc.list_reminders(l.id, include_completed=False)
+        out += [_out(r, l.title) for r in res.reminders if not r.deleted and not r.completed]
+    return out
+
+
 def register(mcp):
     @mcp.tool()
     @_reset_on_error
