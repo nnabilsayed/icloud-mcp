@@ -121,7 +121,7 @@ Sensitive. Listed for completeness; recommended to skip or heavily restrict.
 
 ## 9. Account and devices (library: `account`, `devices`, `family`, `storage`)
 
-- [ ] Storage usage and plan summary. S, low
+- [x] Storage usage and plan summary (`icloud_storage`, read-only, live-verified)
 - [ ] Family members list. S, med
 - [ ] Find My: list devices and battery. S, high
 - [ ] Find My: location / play sound / lost mode. M, high. Strongly recommended NOT

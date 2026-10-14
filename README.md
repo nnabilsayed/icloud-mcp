@@ -96,6 +96,9 @@ Both go beyond the basics:
   buffer_minutes, all_day_blocks, calendars, limit)`: the open stretches (at least
   `duration_minutes` long) inside working hours across all calendars.
 - `check_conflicts(start, end)`: what overlaps a proposed time.
+- `icloud_storage()`: plan size, used and free space (GiB, as Settings shows), percent used, usage
+  by category, and a warning from 90% full. Apple reports no plan name, so it is inferred from
+  the size.
 - `propose_event(summary, start, end, calendar, location, description, source)`: **email to
   calendar.** The mail itself comes from a separate mail MCP (for example Gmail); the agent reads
   it, works out the exact date and time, and calls this first. It writes nothing: it returns

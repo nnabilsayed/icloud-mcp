@@ -493,6 +493,10 @@ import notes  # noqa: E402  (CloudKit-backed Notes tools: create, move, delete)
 
 notes.register(mcp)
 
+import account_info  # noqa: E402  (read-only storage and plan summary)
+
+account_info.register(mcp)
+
 
 def _event_text(comp) -> str:
     return " ".join([str(comp.get(k, "")) for k in ("summary", "description", "location")] + _categories_of(comp)).lower()
