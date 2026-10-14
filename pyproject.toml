@@ -7,4 +7,11 @@ dependencies = [
     "caldav",
     "icalendar",
     "pyicloud>=2026.10.0",
+    "niquests",
+    "tzlocal",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
 ]

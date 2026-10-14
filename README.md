@@ -98,5 +98,8 @@ Requires Python 3.10+ and [uv](https://docs.astral.sh/uv/).
 
 See `LICENSE`.
 
+## Tests
 
-
+`uv run pytest` runs the offline suite (no iCloud account or network needed). It covers
+all-day and repeating events, alerts, date-range matching, retries, the agenda tool,
+and the Reminders repeat/due-date handling.

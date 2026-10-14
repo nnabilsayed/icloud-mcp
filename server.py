@@ -60,7 +60,7 @@ def _principal():
 
 
 def _calendar(name: str):
-    for cal in _principal().calendars():
+    for cal in _event_calendar_list():
         if cal.name == name:
             return cal
     raise ValueError(f"Calendar '{name}' not found")
@@ -209,8 +209,8 @@ def _find(cal, uid: str):
 @mcp.tool()
 @_retry
 def list_calendars() -> list[str]:
-    """List the names of all iCloud calendars."""
-    return [c.name for c in _principal().calendars()]
+    """List the names of iCloud calendars that can hold events."""
+    return [c.name for c in _event_calendar_list()]
 
 
 @mcp.tool()
