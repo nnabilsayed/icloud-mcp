@@ -52,7 +52,7 @@ on); its method names below come from inspecting the installed version.
 - [ ] **Edit or cancel a single occurrence** of a repeating event (RECURRENCE-ID /
       EXDATE). M-L, low (standard iCalendar, fiddly)
 - [x] **Create, rename, delete calendars** (CalDAV `make_calendar`). S-M, med
-- [ ] **Get one event by uid** (without scanning), and **search events by text**. S, low
+- [x] **Get one event by uid** (without scanning), and **search events by text**. S, low
 - [ ] **Event URL, notes and extra fields** (URL, categories, status, priority). S, low
 - [ ] **Time zone support**: accept an explicit zone, default to yours, stop creating
       floating times. M, med (changes behavior, so test carefully)

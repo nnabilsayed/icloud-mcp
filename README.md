@@ -22,7 +22,8 @@ Both go beyond the basics:
 ### Calendar
 
 `list_calendars`, `list_events`, `create_event`, `update_event`, `delete_event`,
-`create_calendar`, `rename_calendar`, `delete_calendar`.
+`create_calendar`, `rename_calendar`, `delete_calendar`,
+`get_event`, `search_events`.
 
 - **All-day events:** `start`/`end` as `YYYY-MM-DD` (`end` is the last day, inclusive; the
   default is a one-day event).
@@ -31,6 +32,10 @@ Both go beyond the basics:
   Editing or deleting a repeating event affects the whole series.
 - **Alerts:** `alerts` is a list of minutes before the start (`[30, 1440]` = 30 minutes and
   1 day before); on update it replaces the existing alerts and `[]` clears them.
+- **Find events:** `get_event(uid, calendar)` returns one event's full details by id (the
+  calendar is optional). `search_events(text, calendar, start, end, include_past, limit)` finds
+  events by words in the title, notes or location without knowing the date; by default it skips
+  events that are already over and lists a repeating event once.
 - **Moving an event** (a new `start` without an `end`) keeps its length.
 - **Conflicts:** `create_event` reports `conflicts` for a timed event (it still creates it;
   `warn_conflicts=False` skips the check).

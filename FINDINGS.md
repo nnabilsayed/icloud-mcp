@@ -203,3 +203,10 @@ A list is one `List` record. Created, renamed and deleted in the Reminders app a
   also edits the account's list-order blob; leaving it alone works (the blob already keeps ids
   of deleted lists). A list deleted through this project matches one deleted in the app in
   every field except its name.
+
+## Finding one event by uid on iCloud
+
+iCloud's CalDAV server does not support searching by uid: the library's `get_event_by_uid`
+sends a REPORT that iCloud answers with `412 Precondition Failed`. An event can instead be
+fetched from its own address, `<calendar url>/<uid>.ics`, which holds for events made by this
+project and (all 30 checked) by the Calendar app. A scan of the calendar is the fallback.

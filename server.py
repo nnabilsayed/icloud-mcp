@@ -203,7 +203,24 @@ def _summarize(ev) -> dict:
     }
 
 
+def _load_direct(cal, uid: str):
+    """Fetch an event straight from its own address (<calendar>/<uid>.ics), one request instead of a
+    scan. iCloud does not support searching by uid (it answers 412), but events made by this server
+    and most Apple-made ones live at that address. Returns None if it isn't there."""
+    ev = caldav.Event(client=cal.client, url=cal.url.join(f"{uid}.ics"), parent=cal)
+    ev.load()
+    return ev if str(ev.icalendar_component.get("uid")) == uid else None
+
+
 def _find(cal, uid: str):
+    """The event with this uid: tries the direct fetch first, and scans the calendar when that finds
+    nothing or can't be used, so a miss is still a true miss."""
+    try:
+        ev = _load_direct(cal, uid)
+        if ev is not None:
+            return ev
+    except Exception:  # not at that address, a fake calendar, or a server that refuses: scan instead
+        pass
     for ev in cal.events():
         if str(ev.icalendar_component.get("uid")) == uid:
             return ev
@@ -403,6 +420,75 @@ def delete_event(calendar: str, uid: str) -> str:
 import reminders  # noqa: E402  (CloudKit-backed Reminders tools)
 
 reminders.register(mcp)
+
+
+def _event_text(comp) -> str:
+    return " ".join(str(comp.get(k, "")) for k in ("summary", "description", "location")).lower()
+
+
+@mcp.tool()
+@_retry
+def get_event(uid: str, calendar: str = "") -> dict:
+    """One event's full details by its uid (the id every event tool returns). calendar is optional:
+    leave it out to look in all calendars. Returns the same fields as list_events plus its
+    calendar, repeat rule and alerts."""
+    cals = [_calendar(calendar)] if calendar else _event_calendar_list()
+    for cal in cals:
+        try:
+            return {"calendar": cal.name, **_summarize(_find(cal, uid))}
+        except ValueError:
+            continue
+    raise ValueError(f"Event {uid} not found" + (f" in '{calendar}'" if calendar else " in any calendar"))
+
+
+@mcp.tool()
+@_retry
+def search_events(
+    text: str,
+    calendar: str = "",
+    start: str = "",
+    end: str = "",
+    include_past: bool = False,
+    limit: int = 20,
+) -> dict:
+    """Find events by words in the title, notes or location (case-insensitive), without knowing
+    the date, e.g. text='dentist'. calendar: one name (default all). start/end ('YYYY-MM-DD' or ISO
+    datetime) limit the search to that range and list each occurrence of repeating events; without
+    them it looks at every event, hides ones that are already over (include_past=True shows them)
+    and lists a repeating event once. Returns the first `limit` matches by start time, and the
+    total count."""
+    needle = text.strip().lower()
+    if not needle:
+        raise ValueError("text must not be empty")
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+    cals = [_calendar(calendar)] if calendar else _event_calendar_list()
+    hits = []
+    if start or end:
+        a = datetime.fromisoformat(start) if start else datetime.combine(datetime.now().date(), time_of_day.min)
+        b = datetime.fromisoformat(end) if end else a + timedelta(days=365)
+        if b <= a:
+            raise ValueError("end must be after start")
+        for cal in cals:
+            hits += [(cal, e) for e in _search_range(cal, a, b) if needle in _event_text(e.icalendar_component)]
+    else:
+        now = datetime.now()
+        for cal in cals:
+            for e in cal.events():
+                comp = e.icalendar_component
+                if needle not in _event_text(comp):
+                    continue
+                if not include_past and not comp.get("rrule") and comp.get("dtstart") is not None:
+                    st = comp["dtstart"].dt
+                    en = _local_naive(comp["dtend"].dt) if comp.get("dtend") else _local_naive(st)
+                    if _is_all_day(st) and comp.get("dtend") is None:
+                        en += timedelta(days=1)
+                    if en < now:
+                        continue
+                hits.append((cal, e))
+    rows = [{"calendar": cal.name, **_summarize(e)} for cal, e in hits]
+    rows.sort(key=lambda r: (r["start"] or "", r["summary"]))
+    return {"count": len(rows), "events": rows[:limit]}
 
 
 # --- Calendars: create, rename, delete ------------------------------------------------
