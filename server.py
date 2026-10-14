@@ -4,7 +4,7 @@ ICLOUD_APP_PASSWORD - app-specific password (appleid.apple.com)
 """
 import os
 import uuid
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import caldav
 from icalendar import Calendar, Event
@@ -33,13 +33,31 @@ def _calendar(name: str):
     raise ValueError(f"Calendar '{name}' not found")
 
 
+def _is_all_day(value) -> bool:
+    return isinstance(value, date) and not isinstance(value, datetime)
+
+
+def _parse_when(value: str):
+    """'YYYY-MM-DD' is a date (all-day); anything else is an ISO datetime."""
+    value = value.strip()
+    if len(value) == 10:
+        return date.fromisoformat(value)
+    return datetime.fromisoformat(value)
+
+
 def _summarize(ev) -> dict:
     comp = ev.icalendar_component
+    start = comp.get("dtstart").dt if comp.get("dtstart") else None
+    end = comp.get("dtend").dt if comp.get("dtend") else None
+    all_day = _is_all_day(start)
+    if all_day and end is not None:
+        end = end - timedelta(days=1)  # iCalendar's DTEND is exclusive; report the last day
     return {
         "uid": str(comp.get("uid")),
         "summary": str(comp.get("summary", "")),
-        "start": comp.get("dtstart").dt.isoformat() if comp.get("dtstart") else None,
-        "end": comp.get("dtend").dt.isoformat() if comp.get("dtend") else None,
+        "start": start.isoformat() if start else None,
+        "end": end.isoformat() if end else (start.isoformat() if all_day and start else None),
+        "all_day": all_day,
         "location": str(comp.get("location", "")),
         "description": str(comp.get("description", "")),
     }
@@ -60,7 +78,8 @@ def list_calendars() -> list[str]:
 
 @mcp.tool()
 def list_events(calendar: str, start: str, end: str) -> list[dict]:
-    """List events in a calendar between ISO datetimes start and end."""
+    """List events in a calendar between ISO datetimes (or dates) start and end.
+    All-day events are included and flagged with all_day=true."""
     cal = _calendar(calendar)
     found = cal.search(
         start=datetime.fromisoformat(start),
@@ -80,9 +99,21 @@ def create_event(
     location: str = "",
     description: str = "",
 ) -> dict:
-    """Create an event. start/end are ISO datetimes; end defaults to start + 1 hour."""
-    s = datetime.fromisoformat(start)
-    e = datetime.fromisoformat(end) if end else s + timedelta(hours=1)
+    """Create an event. start/end are ISO datetimes; end defaults to start + 1 hour.
+    All-day: pass start as 'YYYY-MM-DD'. end is then the last day (inclusive, also
+    'YYYY-MM-DD') and defaults to the same day, e.g. start='2026-10-20' is a one-day event."""
+    s = _parse_when(start)
+    if _is_all_day(s):
+        last = _parse_when(end) if end else s
+        if not _is_all_day(last):
+            raise ValueError("An all-day event needs end as 'YYYY-MM-DD' (or omit it)")
+        if last < s:
+            raise ValueError("end is before start")
+        e = last + timedelta(days=1)
+    else:
+        e = _parse_when(end) if end else s + timedelta(hours=1)
+        if _is_all_day(e):
+            raise ValueError("A timed event needs end as an ISO datetime, not a date")
     cal = Calendar()
     cal.add("prodid", "-//icloud-mcp//EN")
     cal.add("version", "2.0")
@@ -91,7 +122,7 @@ def create_event(
     ev.add("summary", summary)
     ev.add("dtstart", s)
     ev.add("dtend", e)
-    ev.add("dtstamp", datetime.utcnow())
+    ev.add("dtstamp", datetime.now(timezone.utc))
     if location:
         ev.add("location", location)
     if description:
@@ -111,17 +142,36 @@ def update_event(
     location: str | None = None,
     description: str | None = None,
 ) -> dict:
-    """Update fields of an existing event by uid. Only provided fields change."""
+    """Update fields of an existing event by uid. Only provided fields change.
+    Use 'YYYY-MM-DD' for start/end to make it all-day (end = last day, inclusive)."""
     ev = _find(_calendar(calendar), uid)
     comp = ev.icalendar_component
     for key, val in (("summary", summary), ("location", location), ("description", description)):
         if val is not None:
             comp.pop(key, None)
             comp.add(key, val)
-    for key, val in (("dtstart", start), ("dtend", end)):
-        if val is not None:
-            comp.pop(key, None)
-            comp.add(key, datetime.fromisoformat(val))
+    if start is not None or end is not None:
+        cur_start = comp.get("dtstart").dt
+        cur_end = comp.get("dtend").dt if comp.get("dtend") else None
+        new_start = _parse_when(start) if start is not None else cur_start
+        if end is not None:
+            new_end = _parse_when(end)
+            if _is_all_day(new_start):
+                if not _is_all_day(new_end):
+                    raise ValueError("An all-day event needs end as 'YYYY-MM-DD'")
+                new_end = new_end + timedelta(days=1)  # inclusive last day -> exclusive DTEND
+        elif _is_all_day(new_start) == _is_all_day(cur_start) and cur_end is not None:
+            new_end = cur_end  # same kind as before: keep the existing end
+        elif _is_all_day(new_start):
+            new_end = new_start + timedelta(days=1)  # became all-day: one day
+        else:
+            new_end = new_start + timedelta(hours=1)  # became timed: one hour
+        if _is_all_day(new_end) != _is_all_day(new_start):
+            raise ValueError("start and end must both be dates or both be datetimes")
+        comp.pop("dtstart", None)
+        comp.add("dtstart", new_start)
+        comp.pop("dtend", None)
+        comp.add("dtend", new_end)
     ev.save()
     return _summarize(ev)
 

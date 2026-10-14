@@ -18,6 +18,8 @@ Reminders support goes beyond the basics: repeat, early reminders, tags and
 
 Calendar: `list_calendars`, `list_events`, `create_event`, `update_event`,
 `delete_event`.
+`create_event` / `update_event` take `YYYY-MM-DD` for `start`/`end` to make an
+all-day event (`end` is the last day, inclusive; default is a one-day event).
 
 Reminders: `list_reminder_lists`, `list_reminders`, `create_reminder`,
 `update_reminder`, `complete_reminder`, `delete_reminder`.
