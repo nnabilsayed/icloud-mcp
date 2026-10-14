@@ -12,6 +12,7 @@ from datetime import date, datetime, timedelta, timezone
 from datetime import time as time_of_day
 
 import activity
+import errors
 import caldav
 from caldav.elements import dav, ical as ical_elements
 import niquests
@@ -19,7 +20,7 @@ from icalendar import Alarm, Calendar, Event
 from tzlocal import get_localzone
 from mcp.server.fastmcp import FastMCP
 
-mcp = FastMCP("icloud-calendar")
+mcp = errors.install(FastMCP("icloud-calendar"))
 activity.set_agent_resolver(lambda: mcp.get_context().session.client_params.clientInfo.name)
 
 _client = None

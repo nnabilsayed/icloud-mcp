@@ -151,6 +151,14 @@ label or mark mail read (the mailbox is opened read-only and bodies are fetched 
   Register it like the iCloud server, with `gmail_server.py` as the script.
 - Pair it with `propose_event`: read a confirmation email, propose the event, confirm, create.
 
+## Errors
+
+Every tool failure (iCloud and Gmail servers) reaches the agent as
+`[category] retryable=true|false: <original message> (hint)`. Categories: `not_found`, `auth`,
+`network`, `conflict`, `invalid`, `unavailable`, `error`; `network`, `conflict` and `unavailable` are
+retryable. URLs and credentials are removed from the message. Argument-type errors caught by the
+MCP layer before a tool runs are not classified. The code is in `errors.py`.
+
 ## Setup
 
 Requires Python 3.10+ and [uv](https://docs.astral.sh/uv/).

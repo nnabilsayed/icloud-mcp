@@ -13,9 +13,10 @@ from datetime import datetime, timedelta
 from email.header import decode_header, make_header
 from html.parser import HTMLParser
 
+import errors
 from mcp.server.fastmcp import FastMCP
 
-mcp = FastMCP("gmail-readonly")
+mcp = errors.install(FastMCP("gmail-readonly"))
 
 HOST = "imap.gmail.com"
 MAX_LIMIT = 50

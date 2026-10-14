@@ -141,7 +141,7 @@ Sensitive. Listed for completeness; recommended to skip or heavily restrict.
 - [x] **Dry-run / preview mode** for bulk changes with a confirm step. M, low
 - [ ] **Per-agent permissions**: read-only vs read-write, per calendar or list. M, low
 - [ ] **Tool descriptions tuned per client** (fewer round trips for Luna/Hermes). S, low
-- [ ] **Structured error messages** the model can act on (not-found vs auth vs network). S, low
+- [x] **Structured error messages** the model can act on (not-found vs auth vs network). S, low
 - [ ] **Pagination** for very long lists. S, low
 - [ ] **Caching** list_events / agenda for a few seconds to save calls. S, low
 - [ ] **Health check tool** that reports session state and calendar reachability. S, low
