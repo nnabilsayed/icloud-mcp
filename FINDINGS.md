@@ -68,7 +68,8 @@ UTF-8 JSON, not actually opaque):
 ```
 
 - `dueDateDeltaCount` is negative (before the due date).
-- `dueDateDeltaUnit`: `0` = minutes (seen for "15 minutes before"), `1` = hours, `2` = days.
+- `dueDateDeltaUnit`: `0` = minutes (decoded for "15 minutes before"; written from Python as 5, 30
+  and a custom 45, and the app showed each correctly), `1` = hours, `2` = days.
   Weeks and months (the app offers "1 week before" and "1 month before") were not decoded.
 - An extra *time alarm* is not a substitute for an early reminder: an alarm at a time other than
   the due time makes the app show that time in the Time field (a 20:45 alarm on a 21:00 reminder
