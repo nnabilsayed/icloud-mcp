@@ -54,13 +54,22 @@ def test_early_choice(days, hours, minutes, expected):
     assert R._early_choice(days, hours, minutes) == expected
 
 
+def test_weeks_and_months_choices():
+    assert R._early_choice(None, None, None, 1, None) == (1, R._UNIT_WEEKS)
+    assert R._early_choice(None, None, None, None, 1) == (1, R._UNIT_MONTHS)
+    assert R._early_choice(None, None, None, None, 0) == (0, R._UNIT_DAYS)  # clears
+
+
 def test_two_early_reminders_is_an_error():
-    with pytest.raises(ValueError, match="only one"):
+    with pytest.raises(ValueError, match="Give only one"):
         R._early_choice(None, 1, 15)
+    with pytest.raises(ValueError, match="Give only one"):
+        R._early_choice(None, None, None, 1, 1)
 
 
 def test_minutes_unit_matches_what_the_app_wrote():
     assert (R._UNIT_MINUTES, R._UNIT_HOURS, R._UNIT_DAYS) == (0, 1, 2)  # from decoded app records
+    assert (R._UNIT_WEEKS, R._UNIT_MONTHS) == (3, 4)  # written from Python; the app showed them right
 
 
 def _fake_svc(sent):

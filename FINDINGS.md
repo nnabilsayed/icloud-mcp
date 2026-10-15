@@ -14,7 +14,7 @@ the post-iOS 13 format). Treat it as observations, not a spec.
 |---|---|
 | Repeat frequency is zero-based on the wire | Read rules the app created: "monthly" is stored as `Frequency=2`, and a "every 6 months" rule is `Frequency=2, Interval=6`. |
 | Early reminder lives in `DueDateDeltaAlertsData` | Set one in the app, read the raw record: it appeared as a base64 JSON field and **no** `Alarm`/`AlarmTrigger` record was created. |
-| Early reminder units 0 = minutes, 1 = hours, 2 = days | Created "1 day before" (`unit 2, count -1`), "3 hours before" (`unit 1, count -3`) and "15 minutes before" (`unit 0, count -15`) in the app and decoded all three. |
+| Early reminder units 0 = minutes, 1 = hours, 2 = days, 3 = weeks, 4 = months | Created "1 day before" (`unit 2, count -1`), "3 hours before" (`unit 1, count -3`) and "15 minutes before" (`unit 0, count -15`) in the app and decoded all three. |
 | Urgent = asset + encrypted checksum | Turned Urgent on in the app: two new fields appeared. Wrote the same shape from Python; the reminder fired as an Urgent alarm on the phone (confirmed by the author). |
 
 Verified individually against app-made records: all four repeat values
@@ -69,8 +69,10 @@ UTF-8 JSON, not actually opaque):
 
 - `dueDateDeltaCount` is negative (before the due date).
 - `dueDateDeltaUnit`: `0` = minutes (decoded for "15 minutes before"; written from Python as 5, 30
-  and a custom 45, and the app showed each correctly), `1` = hours, `2` = days.
-  Weeks and months (the app offers "1 week before" and "1 month before") were not decoded.
+  and a custom 45, and the app showed each correctly), `1` = hours, `2` = days, `3` = weeks and
+  `4` = months. Weeks and months were guessed by pattern and written from Python; the app then
+  showed "1 week before" and "1 month before" (confirmed by the author), but they were not decoded
+  from an alert the app wrote itself.
 - An extra *time alarm* is not a substitute for an early reminder: an alarm at a time other than
   the due time makes the app show that time in the Time field (a 20:45 alarm on a 21:00 reminder
   showed "8:45 PM"), and the Early Reminder row stays "None".

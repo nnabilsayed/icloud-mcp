@@ -105,22 +105,24 @@ def _out(r, list_title: str | None = None) -> dict:
 
 # --- Early reminder ("Early Reminder" in the app) -------------------------
 # Not an alarm record: Apple keeps it in the reminder's DueDateDeltaAlertsData
-# field as base64 JSON. Only unit 2 (= days) has been verified against the app.
+# field as base64 JSON. Minutes, hours and days were decoded from alerts made in the app
+# (15 minutes, 3 hours, 1 day); weeks and months were written from Python and the app showed
+# "1 week before" and "1 month before" for them.
 _ACCOUNT_ID_FILE = Path(__file__).with_name(".account_id")
-_UNIT_MINUTES = 0  # verified by decoding a "15 minutes before" alert made in the app
-_UNIT_HOURS = 1  # verified by decoding a "3 hours before" alert made in the app
-_UNIT_DAYS = 2
+_UNIT_MINUTES, _UNIT_HOURS, _UNIT_DAYS, _UNIT_WEEKS, _UNIT_MONTHS = 0, 1, 2, 3, 4
+_EARLY_UNITS = (("early_minutes", _UNIT_MINUTES), ("early_hours", _UNIT_HOURS), ("early_days", _UNIT_DAYS),
+                ("early_weeks", _UNIT_WEEKS), ("early_months", _UNIT_MONTHS))
 
 
-def _early_choice(days, hours, minutes):
+def _early_choice(days, hours, minutes, weeks=None, months=None):
     """The one early reminder asked for as (count, unit), or None when none was given.
     The app holds a single early reminder, so asking for two is an error, not a silent pick."""
-    given = [(c, u) for c, u in ((minutes, _UNIT_MINUTES), (hours, _UNIT_HOURS), (days, _UNIT_DAYS))
-             if c is not None]
+    given = [(c, u) for c, u in ((minutes, _UNIT_MINUTES), (hours, _UNIT_HOURS), (days, _UNIT_DAYS),
+                                 (weeks, _UNIT_WEEKS), (months, _UNIT_MONTHS)) if c is not None]
     asked = [(c, u) for c, u in given if c]
     if len(asked) > 1:
-        raise ValueError("Give only one of early_minutes, early_hours or early_days "
-                         "(the app holds one early reminder).")
+        raise ValueError("Give only one of early_minutes, early_hours, early_days, early_weeks or "
+                         "early_months (the app holds one early reminder).")
     if asked:
         return asked[0]
     return (0, _UNIT_DAYS) if given else None  # an explicit 0 clears it
@@ -1112,13 +1114,13 @@ def _detail(svc, rid: str, list_title: str | None = None) -> dict:
     d["subtasks"] = [{"id": x.id, "title": x.title, "completed": x.completed} for x in _subtasks_of(svc, r)]
     d["alarms"] = _alarms_out(svc, r)
     alerts = (_read_alerts_blob(svc, rid) or {}).get("dueDateDeltaAlerts", [])
-    for key, unit in (("early_minutes", _UNIT_MINUTES), ("early_hours", _UNIT_HOURS), ("early_days", _UNIT_DAYS)):
+    for key, unit in _EARLY_UNITS:
         d[key] = next(
             (abs(a["dueDateDeltaCount"]) for a in alerts if a.get("dueDateDeltaUnit") == unit),
             None,
         )
     d["early_other"] = [
-        a for a in alerts if a.get("dueDateDeltaUnit") not in (_UNIT_MINUTES, _UNIT_HOURS, _UNIT_DAYS)
+        a for a in alerts if a.get("dueDateDeltaUnit") not in [u for _, u in _EARLY_UNITS]
     ]  # units we haven't mapped yet; shown raw
     d["urgent"] = "UrgentPresentationAlarmsAsData" in _raw_lookup(svc, rid)
     return d
@@ -1237,6 +1239,8 @@ def register(mcp):
         early_days: int = 0,
         early_hours: int = 0,
         early_minutes: int = 0,
+        early_weeks: int = 0,
+        early_months: int = 0,
         urgent: bool = False,
         links: list[str] | None = None,
         alarms: list[str] | None = None,
@@ -1253,8 +1257,9 @@ def register(mcp):
         notify: a reminder with a due TIME gets an alarm at that time, like the app does,
         because without one it never notifies. Set notify=False for a silent due time.
         Passing alarms yourself overrides this default.
-        early_days / early_hours / early_minutes: also notify N days, hours or minutes before
-        the due date (needs a due date; the app holds one early reminder, so use one of them).
+        early_minutes / early_hours / early_days / early_weeks / early_months: also notify N of
+        that unit before the due date (needs a due date; the app holds one early reminder, so
+        use one of them).
         The due time stays the real time; this is the app's "Early Reminder" setting, so for
         "9 PM with a 15 minute heads-up" pass due 21:00 and early_minutes=15, not an extra alarm.
         due: '' for none, 'YYYY-MM-DD' for all-day, or an ISO datetime (local time).
@@ -1262,7 +1267,8 @@ def register(mcp):
         repeat: '' none, or daily|weekly|monthly|yearly; repeat_interval=every N
         units; repeat_count=0 means forever. tags: names without '#'.
         Repeat needs a due date to be meaningful."""
-        early = _early_choice(early_days or None, early_hours or None, early_minutes or None)
+        early = _early_choice(early_days or None, early_hours or None, early_minutes or None,
+                              early_weeks or None, early_months or None)
         l = _list(list)
         dt, all_day = _parse_due(due)
         timed = dt is not None and not all_day
@@ -1318,6 +1324,8 @@ def register(mcp):
         early_days: int | None = None,
         early_hours: int | None = None,
         early_minutes: int | None = None,
+        early_weeks: int | None = None,
+        early_months: int | None = None,
         links: list[str] | None = None,
         alarms: list[str] | None = None,
         notify: bool = True,
@@ -1328,8 +1336,8 @@ def register(mcp):
         move_to: a list (name or id) to move it to, with its subtasks.
         parent: id of a reminder to nest it under as a subtask (same list, one level deep);
         '' makes it a top-level reminder again.
-        early_days / early_hours / early_minutes: notify N days, hours or minutes before due
-        (the app's Early Reminder; one only); 0 clears it.
+        early_minutes / early_hours / early_days / early_weeks / early_months: notify N of that
+        unit before due (the app's Early Reminder; one only); 0 clears it.
         repeat: daily|weekly|monthly|yearly, or 'none' to remove.
         tags: the complete desired tag set (replaces existing); [] removes all.
         links: the complete set of attached URLs (replaces existing); [] removes all.
@@ -1338,7 +1346,7 @@ def register(mcp):
         due to a time, the alarm at the due time follows it (and is added if missing, so the
         reminder notifies; notify=False keeps it silent).
         Location alarms are never touched."""
-        early = _early_choice(early_days, early_hours, early_minutes)
+        early = _early_choice(early_days, early_hours, early_minutes, early_weeks, early_months)
         svc = _service()
         r = svc.get(id)
         if due is None:
