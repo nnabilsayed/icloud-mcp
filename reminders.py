@@ -107,8 +107,23 @@ def _out(r, list_title: str | None = None) -> dict:
 # Not an alarm record: Apple keeps it in the reminder's DueDateDeltaAlertsData
 # field as base64 JSON. Only unit 2 (= days) has been verified against the app.
 _ACCOUNT_ID_FILE = Path(__file__).with_name(".account_id")
+_UNIT_MINUTES = 0  # verified by decoding a "15 minutes before" alert made in the app
 _UNIT_HOURS = 1  # verified by decoding a "3 hours before" alert made in the app
 _UNIT_DAYS = 2
+
+
+def _early_choice(days, hours, minutes):
+    """The one early reminder asked for as (count, unit), or None when none was given.
+    The app holds a single early reminder, so asking for two is an error, not a silent pick."""
+    given = [(c, u) for c, u in ((minutes, _UNIT_MINUTES), (hours, _UNIT_HOURS), (days, _UNIT_DAYS))
+             if c is not None]
+    asked = [(c, u) for c, u in given if c]
+    if len(asked) > 1:
+        raise ValueError("Give only one of early_minutes, early_hours or early_days "
+                         "(the app holds one early reminder).")
+    if asked:
+        return asked[0]
+    return (0, _UNIT_DAYS) if given else None  # an explicit 0 clears it
 
 
 def _raw_lookup(svc, rid: str) -> dict:
@@ -1097,13 +1112,13 @@ def _detail(svc, rid: str, list_title: str | None = None) -> dict:
     d["subtasks"] = [{"id": x.id, "title": x.title, "completed": x.completed} for x in _subtasks_of(svc, r)]
     d["alarms"] = _alarms_out(svc, r)
     alerts = (_read_alerts_blob(svc, rid) or {}).get("dueDateDeltaAlerts", [])
-    for key, unit in (("early_hours", _UNIT_HOURS), ("early_days", _UNIT_DAYS)):
+    for key, unit in (("early_minutes", _UNIT_MINUTES), ("early_hours", _UNIT_HOURS), ("early_days", _UNIT_DAYS)):
         d[key] = next(
             (abs(a["dueDateDeltaCount"]) for a in alerts if a.get("dueDateDeltaUnit") == unit),
             None,
         )
     d["early_other"] = [
-        a for a in alerts if a.get("dueDateDeltaUnit") not in (_UNIT_HOURS, _UNIT_DAYS)
+        a for a in alerts if a.get("dueDateDeltaUnit") not in (_UNIT_MINUTES, _UNIT_HOURS, _UNIT_DAYS)
     ]  # units we haven't mapped yet; shown raw
     d["urgent"] = "UrgentPresentationAlarmsAsData" in _raw_lookup(svc, rid)
     return d
@@ -1221,6 +1236,7 @@ def register(mcp):
         tags: list[str] | None = None,
         early_days: int = 0,
         early_hours: int = 0,
+        early_minutes: int = 0,
         urgent: bool = False,
         links: list[str] | None = None,
         alarms: list[str] | None = None,
@@ -1237,13 +1253,16 @@ def register(mcp):
         notify: a reminder with a due TIME gets an alarm at that time, like the app does,
         because without one it never notifies. Set notify=False for a silent due time.
         Passing alarms yourself overrides this default.
-        early_days / early_hours: also notify N days or hours before the due date
-        (needs a due date; the app holds one early reminder, so use one of them).
+        early_days / early_hours / early_minutes: also notify N days, hours or minutes before
+        the due date (needs a due date; the app holds one early reminder, so use one of them).
+        The due time stays the real time; this is the app's "Early Reminder" setting, so for
+        "9 PM with a 15 minute heads-up" pass due 21:00 and early_minutes=15, not an extra alarm.
         due: '' for none, 'YYYY-MM-DD' for all-day, or an ISO datetime (local time).
         priority: 0 none, 1 high, 5 medium, 9 low.
         repeat: '' none, or daily|weekly|monthly|yearly; repeat_interval=every N
         units; repeat_count=0 means forever. tags: names without '#'.
         Repeat needs a due date to be meaningful."""
+        early = _early_choice(early_days or None, early_hours or None, early_minutes or None)
         l = _list(list)
         dt, all_day = _parse_due(due)
         timed = dt is not None and not all_day
@@ -1273,10 +1292,8 @@ def register(mcp):
         _apply_tags(svc, r, tags)
         _apply_links(svc, svc.get(r.id), links)
         _apply_alarms(svc, svc.get(r.id), alarms)
-        if early_hours:
-            _set_early(svc, r.id, early_hours, _UNIT_HOURS)
-        elif early_days:
-            _set_early(svc, r.id, early_days, _UNIT_DAYS)
+        if early:
+            _set_early(svc, r.id, *early)
         if urgent:
             _set_urgent(svc, r.id)
         out = _detail(svc, r.id, l.title)
@@ -1300,6 +1317,7 @@ def register(mcp):
         tags: list[str] | None = None,
         early_days: int | None = None,
         early_hours: int | None = None,
+        early_minutes: int | None = None,
         links: list[str] | None = None,
         alarms: list[str] | None = None,
         notify: bool = True,
@@ -1310,7 +1328,8 @@ def register(mcp):
         move_to: a list (name or id) to move it to, with its subtasks.
         parent: id of a reminder to nest it under as a subtask (same list, one level deep);
         '' makes it a top-level reminder again.
-        early_days / early_hours: notify N days or hours before due; 0 clears it.
+        early_days / early_hours / early_minutes: notify N days, hours or minutes before due
+        (the app's Early Reminder; one only); 0 clears it.
         repeat: daily|weekly|monthly|yearly, or 'none' to remove.
         tags: the complete desired tag set (replaces existing); [] removes all.
         links: the complete set of attached URLs (replaces existing); [] removes all.
@@ -1319,6 +1338,7 @@ def register(mcp):
         due to a time, the alarm at the due time follows it (and is added if missing, so the
         reminder notifies; notify=False keeps it silent).
         Location alarms are never touched."""
+        early = _early_choice(early_days, early_hours, early_minutes)
         svc = _service()
         r = svc.get(id)
         if due is None:
@@ -1365,10 +1385,8 @@ def register(mcp):
             _apply_alarms(svc, svc.get(id), alarms)
         elif moved_alarms is not None:
             _apply_alarms(svc, svc.get(id), moved_alarms)
-        if early_hours is not None:
-            _set_early(svc, id, early_hours, _UNIT_HOURS)
-        elif early_days is not None:
-            _set_early(svc, id, early_days, _UNIT_DAYS)
+        if early is not None:
+            _set_early(svc, id, *early)
         if move_target is not None and svc.get(id).list_id != move_target.id:
             kids = _subtasks_of(svc, svc.get(id))
             _move_reminder(svc, svc.get(id), move_target)
@@ -1379,7 +1397,7 @@ def register(mcp):
         changed = [n for n, v in (("title", title), ("due", due), ("notes", notes), ("priority", priority),
                                   ("flag", flagged), ("repeat", repeat), ("tags", tags), ("links", links),
                                   ("alarms", alarms), ("list", move_to), ("parent", parent),
-                                  ("early reminder", early_days if early_days is not None else early_hours)) if v is not None]
+                                  ("early reminder", early)) if v is not None]
         out["log_id"] = activity.record(
             "update_reminder", f"Updated reminder '{out['title']}': {', '.join(changed) or 'no fields'}",
             undo={"op": "restore_reminder", "snapshot": before})

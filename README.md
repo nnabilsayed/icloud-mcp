@@ -65,8 +65,9 @@ Both go beyond the basics:
 
 - **Fields:** `due` (`YYYY-MM-DD` for all-day, or an ISO datetime in local time), `notes`,
   `priority`, `flagged`, `repeat` (`daily|weekly|monthly|yearly` with `repeat_interval`,
-  `repeat_count`; an existing rule is edited in place), `tags`, `early_hours` / `early_days`,
-  and `urgent` (turn-on only).
+  `repeat_count`; an existing rule is edited in place), `tags`, `early_minutes` / `early_hours` /
+  `early_days` (the app's Early Reminder; one only, the due time stays the real time), and
+  `urgent` (turn-on only).
 - **Links:** `links` attaches URLs (on update: the complete set, `[]` removes all).
 - **Alarms:** `alarms` are extra time alarms, each `YYYY-MM-DDTHH:MM` local or `due` for the due
   time (on update: the complete set, `[]` removes them; location alarms are never touched). A

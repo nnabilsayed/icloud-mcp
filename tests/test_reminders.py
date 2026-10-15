@@ -39,3 +39,54 @@ def test_timed_due_is_shown_in_local_time(monkeypatch):
     monkeypatch.setattr(R, "get_localzone", lambda: timezone(timedelta(hours=3)))
     r = _reminder(all_day=False, due_date=datetime(2026, 10, 14, 20, tzinfo=timezone.utc))
     assert R._out(r)["due"].startswith("2026-10-14T23:00")
+
+
+@pytest.mark.parametrize("days,hours,minutes,expected", [
+    (None, None, None, None),
+    (0, 0, 0, (0, R._UNIT_DAYS)),  # explicit zeros mean "clear"
+    (None, None, 15, (15, R._UNIT_MINUTES)),
+    (None, 2, None, (2, R._UNIT_HOURS)),
+    (3, None, None, (3, R._UNIT_DAYS)),
+    (None, 0, None, (0, R._UNIT_DAYS)),
+    (0, 0, 15, (15, R._UNIT_MINUTES)),  # a zero beside a real value is ignored
+])
+def test_early_choice(days, hours, minutes, expected):
+    assert R._early_choice(days, hours, minutes) == expected
+
+
+def test_two_early_reminders_is_an_error():
+    with pytest.raises(ValueError, match="only one"):
+        R._early_choice(None, 1, 15)
+
+
+def test_minutes_unit_matches_what_the_app_wrote():
+    assert (R._UNIT_MINUTES, R._UNIT_HOURS, R._UNIT_DAYS) == (0, 1, 2)  # from decoded app records
+
+
+def _fake_svc(sent):
+    reminder = SimpleNamespace(id="Reminder/ABC", due_date=datetime(2026, 10, 17, 18, 0, tzinfo=timezone.utc),
+                               record_change_tag="tag")
+    writes = SimpleNamespace(_reminder_record_name=lambda rid: rid,
+                             _submit_single_record_update=lambda **kw: sent.update(kw))
+    return SimpleNamespace(get=lambda rid: reminder, _writes=writes)
+
+
+def _decoded_alerts(sent):
+    import base64
+    import json
+    return json.loads(base64.b64decode(sent["fields"]["DueDateDeltaAlertsData"]["value"]))["dueDateDeltaAlerts"]
+
+
+def test_set_early_writes_minutes_as_unit_zero(monkeypatch):
+    monkeypatch.setattr(R, "_account_id", lambda: "acct")
+    sent = {}
+    R._set_early(_fake_svc(sent), "Reminder/ABC", 15, R._UNIT_MINUTES)
+    alerts = _decoded_alerts(sent)
+    assert [(a["dueDateDeltaCount"], a["dueDateDeltaUnit"]) for a in alerts] == [(-15, 0)]
+
+
+def test_set_early_zero_clears(monkeypatch):
+    monkeypatch.setattr(R, "_account_id", lambda: "acct")
+    sent = {}
+    R._set_early(_fake_svc(sent), "Reminder/ABC", 0, R._UNIT_DAYS)
+    assert _decoded_alerts(sent) == []

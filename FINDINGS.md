@@ -14,7 +14,7 @@ the post-iOS 13 format). Treat it as observations, not a spec.
 |---|---|
 | Repeat frequency is zero-based on the wire | Read rules the app created: "monthly" is stored as `Frequency=2`, and a "every 6 months" rule is `Frequency=2, Interval=6`. |
 | Early reminder lives in `DueDateDeltaAlertsData` | Set one in the app, read the raw record: it appeared as a base64 JSON field and **no** `Alarm`/`AlarmTrigger` record was created. |
-| Early reminder units 1 = hours, 2 = days | Created "1 day before" (`unit 2, count -1`) and "3 hours before" (`unit 1, count -3`) in the app and decoded both. |
+| Early reminder units 0 = minutes, 1 = hours, 2 = days | Created "1 day before" (`unit 2, count -1`), "3 hours before" (`unit 1, count -3`) and "15 minutes before" (`unit 0, count -15`) in the app and decoded all three. |
 | Urgent = asset + encrypted checksum | Turned Urgent on in the app: two new fields appeared. Wrote the same shape from Python; the reminder fired as an Urgent alarm on the phone (confirmed by the author). |
 
 Verified individually against app-made records: all four repeat values
@@ -68,7 +68,11 @@ UTF-8 JSON, not actually opaque):
 ```
 
 - `dueDateDeltaCount` is negative (before the due date).
-- `dueDateDeltaUnit`: `1` = hours, `2` = days. Other units were not tested.
+- `dueDateDeltaUnit`: `0` = minutes (seen for "15 minutes before"), `1` = hours, `2` = days.
+  Weeks and months (the app offers "1 week before" and "1 month before") were not decoded.
+- An extra *time alarm* is not a substitute for an early reminder: an alarm at a time other than
+  the due time makes the app show that time in the Time field (a 20:45 alarm on a 21:00 reminder
+  showed "8:45 PM"), and the Early Reminder row stays "None".
 - `creationDate` is seconds since the Apple reference date (2001-01-01).
 - `accountIdentifier` is not exposed on the list or reminder record. It is
   only visible inside this field once the app has written one, so it has to be
