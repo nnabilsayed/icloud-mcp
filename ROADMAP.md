@@ -72,7 +72,7 @@ on); its method names below come from inspecting the installed version.
 - [x] **Conflict check** before creating an event. S-M, low
 - [ ] **Find a slot and book it** in one call. M, low
 - [ ] **Smart reschedule**: "push everything on Thursday to Friday". M, low
-- [ ] **Day/week summary stats**: hours booked, busiest day, empty days. S, low
+- [x] **Day/week summary stats** (`week_summary`): hours booked, busiest day, empty days. S, low
 - [ ] **Overdue triage**: walk through overdue items (do / move / drop). S-M, low
 - [ ] **Natural-language capture** ("dentist next Tuesday 3pm, remind me the day
       before"). S-M, low (mostly a better tool description plus date parsing)
@@ -144,7 +144,7 @@ Sensitive. Listed for completeness; recommended to skip or heavily restrict.
 - [x] **Structured error messages** the model can act on (not-found vs auth vs network). S, low
 - [ ] **Pagination** for very long lists. S, low
 - [ ] **Caching** list_events / agenda for a few seconds to save calls. S, low
-- [ ] **Health check tool** that reports session state and calendar reachability. S, low
+- [x] **Health check tool** (`health_check`) that reports session state and calendar reachability. S, low
 - [ ] **Session expiry notice** with the exact fix command in the error. S, low
 
 ## 12. Things that run on their own

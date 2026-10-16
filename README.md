@@ -97,6 +97,9 @@ Both go beyond the basics:
   buffer_minutes, all_day_blocks, calendars, limit)`: the open stretches (at least
   `duration_minutes` long) inside working hours across all calendars.
 - `check_conflicts(start, end)`: what overlaps a proposed time.
+- `week_summary(start, days, work_start, work_end, all_day_blocks)`: events and hours booked per day,
+  busiest, empty and crowded days.
+- `health_check()`: is Calendar and Reminders reachable and signed in, with the exact fix for an expired session.
 - `icloud_storage()`: plan size, used and free space (GiB, as Settings shows), percent used, usage
   by category, and a warning from 90% full. Apple reports no plan name, so it is inferred from
   the size.

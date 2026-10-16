@@ -1241,7 +1241,32 @@ def agenda(start: str = "", days: int = 1, include_overdue: bool = True) -> dict
     }
 
 
+@mcp.tool()
+@_retry
+def week_summary(start: str = "", days: int = 7, work_start: str = "09:00", work_end: str = "18:00",
+                 all_day_blocks: bool = False) -> dict:
+    """How booked you are: per day the number of events and hours booked (overlaps counted once),
+    plus total hours, the busiest day, empty days and crowded days (75%+ of working hours booked).
+    start: 'YYYY-MM-DD' (default today); days: 1-60. All-day events don't count unless all_day_blocks."""
+    if days < 1 or days > 60:
+        raise ValueError("days must be between 1 and 60")
+    ws, we = _parse_clock(work_start, "work_start"), _parse_clock(work_end, "work_end")
+    if we <= ws:
+        raise ValueError("work_end must be after work_start")
+    first = date.fromisoformat(start.strip()) if start.strip() else datetime.now().date()
+    day_list = [first + timedelta(days=i) for i in range(days)]
+    busy = _busy_intervals(_event_calendar_list(), datetime.combine(first, time_of_day.min),
+                           datetime.combine(first + timedelta(days=days), time_of_day.min), all_day_blocks)
+    return {"from": first.isoformat(), "to": day_list[-1].isoformat(),
+            **stats.summarize(stats.day_stats(busy, day_list, ws, we), ws, we)}
+
+
+import health  # noqa: E402  (is each service reachable and signed in)
+import stats  # noqa: E402
+
+health.register(mcp, lambda: f"{len(_event_calendar_list())} calendars")
+
+
+
 if __name__ == "__main__":
     mcp.run()
-
-
