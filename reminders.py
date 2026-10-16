@@ -1126,6 +1126,20 @@ def _detail(svc, rid: str, list_title: str | None = None) -> dict:
     return d
 
 
+def search_items(items: list[dict], text: str) -> list[dict]:
+    """Reminders whose title or notes contain every word of `text` (any case), best matches first:
+    a title hit ranks above a notes-only hit, then earlier due dates."""
+    words = text.lower().split()
+    if not words:
+        raise ValueError("text must not be empty")
+    hits = []
+    for r in items:
+        title, notes = (r["title"] or "").lower(), (r["notes"] or "").lower()
+        if all(w in title or w in notes for w in words):
+            hits.append((0 if all(w in title for w in words) else 1, r["due"] or "9999", r))
+    return [r for _, _, r in sorted(hits, key=lambda h: (h[0], h[1]))]
+
+
 def open_reminders() -> list[dict]:
     """All incomplete reminders across every list (used by the agenda tool)."""
     svc = _service()
@@ -1222,6 +1236,22 @@ def register(mcp):
             res = svc.list_reminders(l.id, include_completed=include_completed)
             out += [_out(r, l.title) for r in res.reminders if not r.deleted]
         return _filter_reminders(out, flagged, priority)
+
+    @mcp.tool()
+    @_reset_on_error
+    def search_reminders(text: str, list: str = "", include_completed: bool = False, limit: int = 25) -> list[dict]:
+        """Find reminders by words in the title or notes, across all lists (or one list). Every word
+        must appear, in any order, any case. Title matches come first, then by due date.
+        Use before creating something to avoid duplicates, or to find 'that reminder about X'."""
+        if limit < 1:
+            raise ValueError("limit must be at least 1")
+        svc = _service()
+        lists = [_list(list)] if list else [l for l in svc.lists() if not l.deleted]
+        items = []
+        for l in lists:
+            res = svc.list_reminders(l.id, include_completed=include_completed)
+            items += [_out(r, l.title) for r in res.reminders if not r.deleted]
+        return search_items(items, text)[:limit]
 
     @mcp.tool()
     @_reset_on_error

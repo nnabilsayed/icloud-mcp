@@ -38,7 +38,7 @@ on); its method names below come from inspecting the installed version.
 - [ ] **"What changed since X"** feed: `iter_changes` / `sync_cursor`. M, med
       (the basis for notifications and the activity log, section 11)
 - [x] **Move a reminder to another list** (matches an app-made move record)
-- [ ] **Search reminders by text** across all lists. S, low (client-side filter)
+- [x] **Search reminders by text** (`search_reminders`) across all lists. S, low (client-side filter)
 - [x] **Subtasks** (the library's `create` takes a parent; verified on a phone)
 - [x] **Priority and flag smart views** ("everything flagged", "all high priority"). S, low
 - [x] **Bulk operations**: complete / move / reschedule many at once, with a preview. M, low

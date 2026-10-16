@@ -99,6 +99,7 @@ Both go beyond the basics:
 - `check_conflicts(start, end)`: what overlaps a proposed time.
 - `week_summary(start, days, work_start, work_end, all_day_blocks)`: events and hours booked per day,
   busiest, empty and crowded days.
+- `search_reminders(text, list, include_completed, limit)`: find reminders by words in title or notes.
 - `health_check()`: is Calendar and Reminders reachable and signed in, with the exact fix for an expired session.
 - `icloud_storage()`: plan size, used and free space (GiB, as Settings shows), percent used, usage
   by category, and a warning from 90% full. Apple reports no plan name, so it is inferred from

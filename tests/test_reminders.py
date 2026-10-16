@@ -99,3 +99,20 @@ def test_set_early_zero_clears(monkeypatch):
     sent = {}
     R._set_early(_fake_svc(sent), "Reminder/ABC", 0, R._UNIT_DAYS)
     assert _decoded_alerts(sent) == []
+
+
+def _item(title, notes=None, due=None):
+    return {"title": title, "notes": notes, "due": due}
+
+
+def test_search_matches_all_words_in_title_or_notes_and_ranks_titles_first():
+    items = [_item("Call dentist", "about the bill", "2026-11-02"), _item("Pay bill", None, "2026-12-01"),
+             _item("Bill the client", None, "2026-10-30"), _item("Buy milk")]
+    assert [r["title"] for r in R.search_items(items, "BILL")] == ["Bill the client", "Pay bill", "Call dentist"]
+    assert [r["title"] for r in R.search_items(items, "dentist bill")] == ["Call dentist"]
+    assert R.search_items(items, "zebra") == []
+
+
+def test_search_rejects_empty_text():
+    with pytest.raises(ValueError, match="empty"):
+        R.search_items([], "   ")
